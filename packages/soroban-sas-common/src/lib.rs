@@ -126,11 +126,13 @@ pub struct AttesterKeyRecord {
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
+#[repr(C)] // Optimize storage serialization (#284)
 pub struct SchemaRecord {
     pub uid: UID,
     pub resolver: Address,
     pub revocable: bool,
     pub schema: String,
+    pub deprecated: bool,
 }
 
 #[contracttype]

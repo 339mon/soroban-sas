@@ -113,3 +113,7 @@ jobs:
         with:
           name: gas_report
           path: gas_report.md
+      - name: Optimize and Calculate Checksums
+        run: |
+          stellar contract optimize
+          sha256sum target/wasm32-unknown-unknown/release/*.wasm > hashes.txt

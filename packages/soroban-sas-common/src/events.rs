@@ -43,6 +43,10 @@ pub const BATCH_ATTESTED: Symbol = symbol_short!("BATCHATT");
 pub const BATCH_REVOKED: Symbol = symbol_short!("BATCHREV");
 /// First topic of every `SchemaDeprecated` event.
 pub const SCHEMA_DEPRECATED: Symbol = symbol_short!("SCHDEP");
+/// First topic of every `ContractPaused` event.
+pub const CONTRACT_PAUSED: Symbol = symbol_short!("PAUSED");
+/// First topic of every `ContractUnpaused` event.
+pub const CONTRACT_UNPAUSED: Symbol = symbol_short!("UNPAUSED");
 
 /// Payload of the `SchemaRegistered` event.
 ///
@@ -316,6 +320,26 @@ pub struct BatchRevokedEvent {
     pub attester_count: u32,
 }
 
+/// Payload of the `ContractPaused` event.
+///
+/// Published with topics `(CONTRACT_PAUSED, authorizer)` when
+/// a contract is paused.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ContractPausedEvent {
+    pub authorizer: Address,
+}
+
+/// Payload of the `ContractUnpaused` event.
+///
+/// Published with topics `(CONTRACT_UNPAUSED, authorizer)` when
+/// a contract is unpaused.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ContractUnpausedEvent {
+    pub authorizer: Address,
+}
+
 /// First topic of a SAS `FeeConfigUpdated` event.
 pub const FEECFG_UPDATED: Symbol = symbol_short!("FEECFGUPD");
 
@@ -332,3 +356,5 @@ pub struct FeeConfigUpdatedEvent {
     pub new_amount: Option<i128>,
     pub authorizer: Address,
 }
+
+pub const REINDEXED: Symbol = symbol_short!("REINDEXED");
