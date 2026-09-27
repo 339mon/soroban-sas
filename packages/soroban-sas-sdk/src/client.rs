@@ -1170,6 +1170,50 @@ impl SASClient {
         )
     }
 
+    /// Calls `SAS::multi_revoke(uids)`: encodes each UID into one Soroban
+    /// vector argument, signs the batch invoke with `secret_seed`, submits it,
+    /// and polls until it settles.
+    pub fn multi_revoke(
+        &self,
+        env: &Env,
+        rpc: &RpcClient,
+        network_passphrase: &str,
+        secret_seed: &[u8; 32],
+        uids: &[&[u8; 32]],
+    ) -> Result<GetTransactionResult, SdkError> {
+        self.submit_write(
+            env,
+            rpc,
+            network_passphrase,
+            secret_seed,
+            &self.contract_id,
+            "multi_revoke",
+            vec![encode_multi_revoke_arg(env, uids)?],
+        )
+    }
+
+    /// Like [`multi_revoke`](Self::multi_revoke) but allows a [`FeePolicy`].
+    pub fn multi_revoke_with_fee_policy(
+        &self,
+        env: &Env,
+        rpc: &RpcClient,
+        network_passphrase: &str,
+        secret_seed: &[u8; 32],
+        uids: &[&[u8; 32]],
+        fee_policy: &FeePolicy,
+    ) -> Result<GetTransactionResult, SdkError> {
+        invoke_write_with_fee_policy(
+            env,
+            rpc,
+            network_passphrase,
+            secret_seed,
+            &self.contract_id,
+            "multi_revoke",
+            vec![encode_multi_revoke_arg(env, uids)?],
+            fee_policy,
+        )
+    }
+
     /// Calls `SAS::attest_by_delegation(attestation, nonce, signature,
     /// public_key)`: submits an already off-chain-signed attestation.
     ///
@@ -1385,6 +1429,20 @@ fn encode_multi_attest_arg(env: &Env, attestations: &[Attestation]) -> Result<Sc
     let encoded: VecM<ScVal> = encoded
         .try_into()
         .map_err(|e| SdkError::RpcError(format!("too many attestations: {e:?}")))?;
+    Ok(ScVal::Vec(Some(encoded.into())))
+}
+
+fn encode_multi_revoke_arg(env: &Env, uids: &[&[u8; 32]]) -> Result<ScVal, SdkError> {
+    let encoded: Vec<ScVal> = uids
+        .iter()
+        .map(|raw_uid| {
+            let uid = UID(BytesN::from_array(env, raw_uid));
+            simulate::encode_arg(env, &uid)
+        })
+        .collect::<Result<_, _>>()?;
+    let encoded: VecM<ScVal> = encoded
+        .try_into()
+        .map_err(|e| SdkError::RpcError(format!("too many uids: {e:?}")))?;
     Ok(ScVal::Vec(Some(encoded.into())))
 }
 
@@ -2112,6 +2170,21 @@ mod tests {
 
         let ScVal::Vec(Some(values)) = arg else {
             panic!("expected multi_attest argument to be an ScVal vector");
+        };
+        assert_eq!(values.len(), 2);
+    }
+
+    #[test]
+    fn multi_revoke_encodes_uids_as_one_vector_arg() {
+        let env = Env::default();
+        let uid1 = [1u8; 32];
+        let uid2 = [2u8; 32];
+        let uids = vec![&uid1, &uid2];
+
+        let arg = encode_multi_revoke_arg(&env, &uids).unwrap();
+
+        let ScVal::Vec(Some(values)) = arg else {
+            panic!("expected multi_revoke argument to be an ScVal vector");
         };
         assert_eq!(values.len(), 2);
     }
