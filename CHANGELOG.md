@@ -15,6 +15,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 | Indexer | `soroban_sas_indexer.wasm` | `TBD` |
 
 ### Added
+- Generic EIP-712 structured-data hashing in `soroban-sas-common::eip712`:
+  `encode_type`/`type_hash`/`encode_data`/`hash_struct`/`hash_typed_data`
+  derived from `StructDef`/`FieldDef` declarations, covering nested structs,
+  dynamic arrays, sign-extended `intN` and right-aligned `address` words, with
+  strict `SchemaError` reporting instead of silent field dropping. Adds a `v1`
+  declaration set that checks each v1 literal type tag against the field list it
+  describes, an `eip712_encode_fuzz` fuzz target, and benchmarks for type-string
+  derivation, nested-struct, array, and full-digest hashing. (#299)
 - `SchemaRegistry::upgrade` now emits the standardized `ContractUpgraded` event
   (`("UPGRADED", authorizer)` with `old_wasm_hash`/`new_wasm_hash`) in addition
   to its versioned `UPGRADE` event, tracking the activated WASM hash in instance
