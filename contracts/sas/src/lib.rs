@@ -56,6 +56,10 @@ pub const MAX_MULTI_ATTEST: u32 = 100;
 /// `MAX_MULTI_ATTEST` so the loop cannot exhaust the Soroban budget and
 /// callers get a predictable `BatchTooLarge` error up front.
 pub const MAX_MULTI_REVOKE: u32 = 100;
+/// Instance key for the `multi_attest` reentrancy guard. It is held (`true`)
+/// for the duration of a batch and removed on the success path; a nested
+/// `multi_attest` while it is held aborts with `SASError::Reentrancy` (#296).
+pub const REENTRANCY_GUARD: Symbol = symbol_short!("REENTRY");
 const REGISTRY_INTERFACE_VERSION: Symbol = symbol_short!("SASREG");
 
 fn extend_instance_ttl(env: &Env) {
@@ -89,6 +93,32 @@ fn require_registry(env: &Env) -> Address {
 /// Checks if the contract is paused. Returns `true` if paused, `false` otherwise.
 fn is_paused_status(env: &Env) -> bool {
     env.storage().instance().get(&PAUSED).unwrap_or(false)
+}
+
+/// Marks `multi_attest` as in progress, rejecting a nested invocation.
+///
+/// The host refuses direct cross-contract re-entry before this can fire, so
+/// the guard is defense-in-depth: it pins the invariant on the contract itself
+/// rather than relying on the host's current behaviour.
+///
+/// Soroban rolls back every storage write made by a panicking invocation, so
+/// a trap inside the guarded section cannot leave the guard behind; only the
+/// success path needs to release it via [`exit_reentrancy_guard`].
+fn enter_reentrancy_guard(env: &Env) {
+    if env
+        .storage()
+        .instance()
+        .get::<_, bool>(&REENTRANCY_GUARD)
+        .unwrap_or(false)
+    {
+        panic_with_error!(env, SASError::Reentrancy);
+    }
+    env.storage().instance().set(&REENTRANCY_GUARD, &true);
+}
+
+/// Releases the `multi_attest` reentrancy guard on the success path.
+fn exit_reentrancy_guard(env: &Env) {
+    env.storage().instance().remove(&REENTRANCY_GUARD);
 }
 
 /// Validates that an attestation has not expired. Returns `Ok(())` if valid,
@@ -951,6 +981,12 @@ impl SAS {
         if attestations.len() > MAX_MULTI_ATTEST {
             panic_with_error!(&env, SASError::BatchTooLarge);
         }
+        // Serialize the batch: a nested `multi_attest` while this one is still
+        // running is rejected, so it cannot interleave its storage writes with
+        // ours. The host already refuses direct cross-contract re-entry, which
+        // makes this defense-in-depth for the callback path (resolver and
+        // indexer) rather than the only line of defence.
+        enter_reentrancy_guard(&env);
         let mut uids = soroban_sdk::Vec::new(&env);
         let mut authorized_attesters = soroban_sdk::Map::new(&env);
         // Map lookup avoids scanning all previously authorized attesters.
@@ -967,6 +1003,7 @@ impl SAS {
         // whole batch committed: a panic anywhere above reverts the call and
         // this never runs.
         events::publish_batch_attested(&env, uids.len(), authorized_attesters.len());
+        exit_reentrancy_guard(&env);
         uids
     }
 
@@ -1441,3 +1478,5 @@ mod test_extra;
 mod test_issue_242;
 #[cfg(test)]
 mod test_issue_252;
+#[cfg(test)]
+mod test_issue_296;
