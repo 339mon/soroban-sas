@@ -14,6 +14,7 @@ use soroban_sdk::{
 };
 
 mod events;
+mod timestamp;
 
 // v1.0.0 State Schema Frozen
 
@@ -564,6 +565,9 @@ impl SAS {
         env.storage()
             .persistent()
             .extend_ttl(&attestation.uid, ttl, ttl);
+        // Anchor the timestamp above to the ledger that produced it, so a
+        // verifier can check it against that ledger's header (#298).
+        timestamp::write_anchor(&env, &attestation.uid, false, ttl);
 
         if let Some(indexer) = env.storage().instance().get::<_, Address>(&INDEXER) {
             Self::notify_indexer_of_issuance(&env, &indexer, &attestation);
@@ -820,6 +824,9 @@ impl SAS {
         let ttl = Self::compute_storage_ttl(&env, attestation.expiration_time);
         env.storage().persistent().set(&uid, &attestation);
         env.storage().persistent().extend_ttl(&uid, ttl, ttl);
+        // The revocation is anchored to its own ledger; the issuance anchor
+        // stays readable alongside it (#298).
+        timestamp::write_anchor(&env, &uid, true, ttl);
 
         events::publish_revoked(&env, &uid, timestamp);
 
@@ -1387,6 +1394,55 @@ impl SAS {
         }
     }
 
+    /// Returns the ledger that issued attestation `uid` — its sequence number
+    /// and that ledger's close time — or `None` if the UID was never issued
+    /// or its entries have been garbage-collected (#298).
+    ///
+    /// Extends the anchor's TTL on a successful read, like every other
+    /// documented reader in this contract.
+    ///
+    /// An off-chain verifier starts here: fetch the ledger header for
+    /// `ledger_sequence` from a source it already trusts, confirm the header's
+    /// close time is `ledger_timestamp`, and the attestation's `time` is then
+    /// bound to a ledger the network agreed on rather than to the attester's
+    /// word. A caller that already holds a claim to check can call
+    /// `verify_timestamp` first and only look up a header if it matches.
+    pub fn get_issuance_timestamp(env: Env, uid: UID) -> Option<timestamp::TimestampAnchor> {
+        extend_instance_ttl(&env);
+        timestamp::read_and_renew_anchor(&env, &uid, false)
+    }
+
+    /// Returns the ledger that revoked attestation `uid`, or `None` if it was
+    /// never revoked (or the entries are gone) (#298).
+    ///
+    /// Independent of `get_issuance_timestamp`: for a revoked attestation
+    /// both anchors exist, so a verifier can show that the record was issued
+    /// at one ledger and revoked at another, from the same pair of headers.
+    /// That is the point of anchoring revocation separately — a bare
+    /// `revocation_time` only says the contract was told some close time.
+    pub fn get_revocation_timestamp(env: Env, uid: UID) -> Option<timestamp::TimestampAnchor> {
+        extend_instance_ttl(&env);
+        timestamp::read_and_renew_anchor(&env, &uid, true)
+    }
+
+    /// Returns `true` when `claim` is exactly one of the ledger anchors this
+    /// contract recorded for `uid` — the issuance anchor of a live
+    /// attestation, or its revocation anchor once revoked (#298).
+    ///
+    /// Both fields of the claim are compared, so a real close time attached to
+    /// the wrong sequence number fails, and so does the right sequence number
+    /// with a doctored time. `false` is also the answer for a UID that was
+    /// never issued.
+    ///
+    /// This is a read: unlike the two readers above it renews nothing, so
+    /// checking a claim costs no storage rent.
+    pub fn verify_timestamp(env: Env, uid: UID, claim: timestamp::TimestampAnchor) -> bool {
+        extend_instance_ttl(&env);
+        let issuance = timestamp::read_anchor(&env, &uid, false);
+        let revocation = timestamp::read_anchor(&env, &uid, true);
+        issuance == Some(claim.clone()) || revocation == Some(claim)
+    }
+
     /// Returns the highest delegation nonce consumed for `attester`, or `None`
     /// if no delegated operation has ever been performed for this attester (#236).
     ///
@@ -1439,3 +1495,5 @@ mod test_extra;
 mod test_issue_242;
 #[cfg(test)]
 mod test_issue_252;
+#[cfg(test)]
+mod test_timestamp;

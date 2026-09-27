@@ -42,6 +42,10 @@ attestation/schema data it governs:
   where their independent expiry from the chunk data they count could reset
   a counter to zero while its chunks survived, corrupting the index with
   duplicate UIDs on the next write (#219).
+  Timestamp anchors (#298) — the ledger sequence and close time recorded
+  for each issuance and revocation — are written on the same per-entry
+  schedule, with the TTL of the attestation they describe, so a record's
+  verifiable timestamps never outlive the record itself.
 
 ## Contract Upgrades
 
