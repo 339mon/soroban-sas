@@ -219,7 +219,7 @@
     []
   ],
   "ledger": {
-    "protocol_version": 20,
+    "protocol_version": 21,
     "sequence_number": 0,
     "timestamp": 0,
     "network_id": "0000000000000000000000000000000000000000000000000000000000000000",
@@ -467,6 +467,14 @@
                   "map": [
                     {
                       "key": {
+                        "symbol": "deprecated"
+                      },
+                      "val": {
+                        "bool": false
+                      }
+                    },
+                    {
+                      "key": {
                         "symbol": "resolver"
                       },
                       "val": {
@@ -541,6 +549,14 @@
                 "durability": "persistent",
                 "val": {
                   "map": [
+                    {
+                      "key": {
+                        "symbol": "deprecated"
+                      },
+                      "val": {
+                        "bool": false
+                      }
+                    },
                     {
                       "key": {
                         "symbol": "resolver"
@@ -619,6 +635,14 @@
                   "map": [
                     {
                       "key": {
+                        "symbol": "deprecated"
+                      },
+                      "val": {
+                        "bool": false
+                      }
+                    },
+                    {
+                      "key": {
                         "symbol": "resolver"
                       },
                       "val": {
@@ -695,6 +719,14 @@
                   "map": [
                     {
                       "key": {
+                        "symbol": "deprecated"
+                      },
+                      "val": {
+                        "bool": false
+                      }
+                    },
+                    {
+                      "key": {
                         "symbol": "resolver"
                       },
                       "val": {
@@ -769,6 +801,14 @@
                 "durability": "persistent",
                 "val": {
                   "map": [
+                    {
+                      "key": {
+                        "symbol": "deprecated"
+                      },
+                      "val": {
+                        "bool": false
+                      }
+                    },
                     {
                       "key": {
                         "symbol": "resolver"
@@ -1264,7 +1304,7 @@
             },
             "ext": "v0"
           },
-          15
+          6311999
         ]
       ],
       [
@@ -1297,7 +1337,7 @@
             },
             "ext": "v0"
           },
-          15
+          6311999
         ]
       ],
       [
@@ -1330,7 +1370,7 @@
             },
             "ext": "v0"
           },
-          15
+          6311999
         ]
       ],
       [
@@ -1363,7 +1403,7 @@
             },
             "ext": "v0"
           },
-          15
+          6311999
         ]
       ],
       [
@@ -1396,7 +1436,7 @@
             },
             "ext": "v0"
           },
-          15
+          6311999
         ]
       ],
       [
@@ -1429,7 +1469,7 @@
             },
             "ext": "v0"
           },
-          15
+          6311999
         ]
       ],
       [
@@ -1462,7 +1502,7 @@
             },
             "ext": "v0"
           },
-          15
+          6311999
         ]
       ],
       [
@@ -1495,7 +1535,7 @@
             },
             "ext": "v0"
           },
-          15
+          6311999
         ]
       ],
       [
@@ -2180,6 +2220,54 @@
       "event": {
         "ext": "v0",
         "contract_id": "0000000000000000000000000000000000000000000000000000000000000001",
+        "type_": "contract",
+        "body": {
+          "v0": {
+            "topics": [
+              {
+                "symbol": "SCHDEP"
+              },
+              {
+                "vec": [
+                  {
+                    "bytes": "f9f775f3c776f4838f4c15f2731cc65274ef09e775f3630d5a43a5f2a01b0543"
+                  }
+                ]
+              }
+            ],
+            "data": {
+              "map": [
+                {
+                  "key": {
+                    "symbol": "deprecated_by"
+                  },
+                  "val": {
+                    "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
+                  }
+                },
+                {
+                  "key": {
+                    "symbol": "schema_uid"
+                  },
+                  "val": {
+                    "vec": [
+                      {
+                        "bytes": "f9f775f3c776f4838f4c15f2731cc65274ef09e775f3630d5a43a5f2a01b0543"
+                      }
+                    ]
+                  }
+                }
+              ]
+            }
+          }
+        }
+      },
+      "failed_call": false
+    },
+    {
+      "event": {
+        "ext": "v0",
+        "contract_id": "0000000000000000000000000000000000000000000000000000000000000001",
         "type_": "diagnostic",
         "body": {
           "v0": {
@@ -2226,6 +2314,54 @@
                 },
                 {
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
+                }
+              ]
+            }
+          }
+        }
+      },
+      "failed_call": false
+    },
+    {
+      "event": {
+        "ext": "v0",
+        "contract_id": "0000000000000000000000000000000000000000000000000000000000000001",
+        "type_": "contract",
+        "body": {
+          "v0": {
+            "topics": [
+              {
+                "symbol": "SCHDEP"
+              },
+              {
+                "vec": [
+                  {
+                    "bytes": "8aa62709d30d5580c4736488ab66b7fd210c3ccffafaab2167064feb1efbcae1"
+                  }
+                ]
+              }
+            ],
+            "data": {
+              "map": [
+                {
+                  "key": {
+                    "symbol": "deprecated_by"
+                  },
+                  "val": {
+                    "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
+                  }
+                },
+                {
+                  "key": {
+                    "symbol": "schema_uid"
+                  },
+                  "val": {
+                    "vec": [
+                      {
+                        "bytes": "8aa62709d30d5580c4736488ab66b7fd210c3ccffafaab2167064feb1efbcae1"
+                      }
+                    ]
+                  }
                 }
               ]
             }
@@ -2311,6 +2447,14 @@
                       "map": [
                         {
                           "key": {
+                            "symbol": "deprecated"
+                          },
+                          "val": {
+                            "bool": false
+                          }
+                        },
+                        {
+                          "key": {
                             "symbol": "resolver"
                           },
                           "val": {
@@ -2349,6 +2493,14 @@
                     },
                     {
                       "map": [
+                        {
+                          "key": {
+                            "symbol": "deprecated"
+                          },
+                          "val": {
+                            "bool": false
+                          }
+                        },
                         {
                           "key": {
                             "symbol": "resolver"
@@ -2453,6 +2605,14 @@
                   "vec": [
                     {
                       "map": [
+                        {
+                          "key": {
+                            "symbol": "deprecated"
+                          },
+                          "val": {
+                            "bool": false
+                          }
+                        },
                         {
                           "key": {
                             "symbol": "resolver"

@@ -1,7 +1,11 @@
 use soroban_sas_common::{
-    events::{ATTESTED, BATCH_ATTESTED, BATCH_REVOKED, INDEXER_UPDATED, REVOKED},
-    Attestation, AttestationIssuedEvent, AttestationRevokedEvent, BatchAttestedEvent,
-    BatchRevokedEvent, IndexerUpdatedEvent, UID,
+    events::{
+        ADMIN_TRANSFER_COMPLETED, ADMIN_TRANSFER_PROPOSED, ATTESTED, BATCH_ATTESTED, BATCH_REVOKED,
+        CONTRACT_PAUSED, CONTRACT_UNPAUSED, CONTRACT_UPGRADED, INDEXER_UPDATED, REVOKED,
+    },
+    AdminTransferCompletedEvent, AdminTransferProposedEvent, Attestation, AttestationIssuedEvent,
+    AttestationRevokedEvent, BatchAttestedEvent, BatchRevokedEvent, ContractPausedEvent,
+    ContractUnpausedEvent, ContractUpgradedEvent, IndexerUpdatedEvent, UID,
 };
 use soroban_sdk::{symbol_short, Address, Env};
 
@@ -58,6 +62,13 @@ pub fn publish_indexer_updated(
             authorizer,
         },
     );
+}
+
+/// Publishes the upgrade success event as the final operation before the
+/// caller requests the WASM swap.
+pub fn publish_contract_upgraded(env: &Env, event: ContractUpgradedEvent) {
+    env.events()
+        .publish((CONTRACT_UPGRADED, event.authorizer.clone()), event);
 }
 
 /// Publishes `IndexFailed` when a bound Indexer could not be notified of a
@@ -126,5 +137,75 @@ pub fn publish_withdrawal(
             token.clone(),
             authorizer.clone(),
         ),
+    );
+}
+
+/// Publishes the `AdminTransferProposed` event.
+///
+/// Topics: `(ADMIN_TRANSFER_PROPOSED, current_admin)`.
+pub fn publish_admin_transfer_proposed(
+    env: &Env,
+    current_admin: &Address,
+    proposed_admin: &Address,
+) {
+    env.events().publish(
+        (ADMIN_TRANSFER_PROPOSED, current_admin.clone()),
+        AdminTransferProposedEvent {
+            current_admin: current_admin.clone(),
+            proposed_admin: proposed_admin.clone(),
+        },
+    );
+}
+
+/// Publishes the `AdminTransferCompleted` event.
+///
+/// Topics: `(ADMIN_TRANSFER_COMPLETED, old_admin)`.
+pub fn publish_admin_transfer_completed(env: &Env, old_admin: &Address, new_admin: &Address) {
+    env.events().publish(
+        (ADMIN_TRANSFER_COMPLETED, old_admin.clone()),
+        AdminTransferCompletedEvent {
+            old_admin: old_admin.clone(),
+            new_admin: new_admin.clone(),
+        },
+    );
+}
+
+/// Publishes the fee change immediately after its storage mutation.
+pub fn publish_fee_config_updated(
+    env: &Env,
+    old: Option<(Address, i128)>,
+    new: Option<(Address, i128)>,
+    authorizer: Address,
+) {
+    use soroban_sas_common::{FeeConfigUpdatedEvent, FEECFG_UPDATED};
+    env.events().publish(
+        (FEECFG_UPDATED, authorizer.clone()),
+        FeeConfigUpdatedEvent {
+            old_token: old.as_ref().map(|(token, _)| token.clone()).into(),
+            old_amount: old.map(|(_, amount)| amount),
+            new_token: new.as_ref().map(|(token, _)| token.clone()).into(),
+            new_amount: new.map(|(_, amount)| amount),
+            authorizer,
+        },
+    );
+}
+
+/// Publishes the `ContractPaused` event when the contract is paused.
+///
+/// Topics: `(CONTRACT_PAUSED, authorizer)`.
+pub fn publish_contract_paused(env: &Env, authorizer: Address) {
+    env.events().publish(
+        (CONTRACT_PAUSED, authorizer.clone()),
+        ContractPausedEvent { authorizer },
+    );
+}
+
+/// Publishes the `ContractUnpaused` event when the contract is unpaused.
+///
+/// Topics: `(CONTRACT_UNPAUSED, authorizer)`.
+pub fn publish_contract_unpaused(env: &Env, authorizer: Address) {
+    env.events().publish(
+        (CONTRACT_UNPAUSED, authorizer.clone()),
+        ContractUnpausedEvent { authorizer },
     );
 }

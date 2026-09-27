@@ -1,21 +1,59 @@
 #![allow(unexpected_cfgs)]
 #![no_std]
-use soroban_sas_common::{SASError, LEDGERS_IN_ONE_YEAR, UID};
+use soroban_sas_common::{
+    events::CONTRACT_UPGRADED, ContractUpgradedEvent, SASError, LEDGERS_IN_ONE_YEAR, UID,
+};
 use soroban_sdk::{
-    contract, contractimpl, contracttype, panic_with_error, symbol_short, Address, Env, IntoVal,
-    Symbol, Val,
+    contract, contractimpl, contracttype, panic_with_error, symbol_short, Address, BytesN, Env,
+    IntoVal, Symbol, TryFromVal, Val,
 };
 
 // v1.0.0 Indexer logic frozen
+//
+// Storage Format (Soroban SDK 21.7.7):
+// - Instance storage: Admin, SAS contract, version, WASM hash, query counter state
+// - Persistent storage: Index chunks, status records, attestation metadata
+// All entries use TTL management with LEDGERS_IN_ONE_YEAR renewal period for durability.
 
 #[contract]
 pub struct Indexer;
+
+// ============================================================================
+// Storage Layout (Soroban SDK 21.7.7 - Modern Storage Patterns)
+// ============================================================================
+// Instance Storage (contract configuration):
+//   INDEXER_ADMIN      - Authority address
+//   SAS_CONTRACT       - SAS contract reference
+//   INDEXER_VERSION    - Contract version
+//   CURRENT_WASM_HASH  - Upgrade tracking
+//   QUERY_COUNTER_SEQ  - Current ledger sequence for query limiting
+//   QUERY_COUNTER_COUNT - Query count in current sequence
+//
+// Persistent Storage (index data):
+//   (RECIPIENT_TOTAL, Address)           - Count of attestations per recipient
+//   (Address, chunk_idx)                 - Chunks of UIDs per recipient
+//   (SCHEMA_TOTAL, UID)                  - Count of attestations per schema
+//   (UID, chunk_idx)                     - Chunks of UIDs per schema
+//   (ATTESTER_TOTAL, Address)            - Count of attestations per attester
+//   (Address, chunk_idx)                 - Chunks of UIDs per attester
+//   (STATUS_KEY, UID)                    - Lifecycle status per attestation
+//   (INDEXED_KEY, UID)                   - Idempotency record (recipient, schema, attester)
+// ============================================================================
 
 /// Address allowed to administer this indexer instance.
 pub const INDEXER_ADMIN: Symbol = symbol_short!("ADMIN");
 /// Address of the SAS contract whose attestations this indexer mirrors.
 pub const SAS_CONTRACT: Symbol = symbol_short!("SAS");
+/// Monotonic contract version. Missing on legacy initialized deployments,
+/// which are treated as genesis version 1.
+pub const INDEXER_VERSION: Symbol = symbol_short!("VERSION");
+/// Hash targeted by the most recent successful upgrade invocation.
+pub const CURRENT_WASM_HASH: Symbol = symbol_short!("WASMHASH");
+/// Highest version whose upgrade path this build knows and has been audited
+/// to activate. Increase only as part of a reviewed release.
+pub const MAX_KNOWN_VERSION: u32 = 2;
 const MAX_CHUNK_SIZE: u32 = 100;
+const MAX_QUERIES_PER_BLOCK: u32 = 1000;
 const RECIPIENT_TOTAL: Symbol = symbol_short!("RCOUNT");
 const SCHEMA_TOTAL: Symbol = symbol_short!("SCOUNT");
 const ATTESTER_TOTAL: Symbol = symbol_short!("ACOUNT");
@@ -27,6 +65,10 @@ const STATUS_KEY: Symbol = symbol_short!("IDXSTAT");
 /// indexed with. Its presence marks the UID as already indexed and pins the
 /// metadata a retry must match.
 const INDEXED_KEY: Symbol = symbol_short!("INDEXED");
+/// Instance key for tracking query count per ledger sequence.
+const QUERY_COUNTER_SEQ: Symbol = symbol_short!("QCSEQ");
+/// Instance key for tracking query count in the current sequence.
+const QUERY_COUNTER_COUNT: Symbol = symbol_short!("QCOUNT");
 
 /// The `(recipient, schema_uid, attester)` triple a UID was first indexed
 /// with. A later `index_attestation` for the same UID must supply an
@@ -51,16 +93,128 @@ fn extend_instance_ttl(env: &Env) {
         .extend_ttl(LEDGERS_IN_ONE_YEAR, LEDGERS_IN_ONE_YEAR);
 }
 
+/// Increments and enforces the maximum queries per ledger sequence limit.
+/// Returns `Ok(())` if the query is allowed, or `Err(SASError::LimitExceeded)` if the
+/// limit has been reached in the current block/sequence.
+fn check_query_limit(env: &Env) -> Result<(), SASError> {
+    let current_seq = env.ledger().sequence();
+    let stored_seq: u32 = env
+        .storage()
+        .instance()
+        .get(&QUERY_COUNTER_SEQ)
+        .unwrap_or(0);
+
+    let count = if current_seq == stored_seq {
+        env.storage()
+            .instance()
+            .get(&QUERY_COUNTER_COUNT)
+            .unwrap_or(0u32)
+    } else {
+        0u32
+    };
+
+    if count >= MAX_QUERIES_PER_BLOCK {
+        return Err(SASError::LimitExceeded);
+    }
+
+    let new_count = count.saturating_add(1);
+    env.storage()
+        .instance()
+        .set(&QUERY_COUNTER_SEQ, &current_seq);
+    env.storage()
+        .instance()
+        .set(&QUERY_COUNTER_COUNT, &new_count);
+
+    Ok(())
+}
+
+fn required_upgrade_address(env: &Env, key: &Symbol) -> Result<Address, SASError> {
+    let Some(raw): Option<Val> = env.storage().instance().get(key) else {
+        return Err(SASError::IncompatibleDependency);
+    };
+    Address::try_from_val(env, &raw).map_err(|_| SASError::IncompatibleDependency)
+}
+
+fn validate_upgrade(
+    env: &Env,
+    new_wasm_hash: &BytesN<32>,
+    new_version: u32,
+) -> Result<Address, SASError> {
+    // This is a pre-activation sanity read of the existing layout. It cannot
+    // execute or inspect the candidate WASM before Soroban installs it.
+    let admin = required_upgrade_address(env, &INDEXER_ADMIN)?;
+    let _sas = required_upgrade_address(env, &SAS_CONTRACT)?;
+
+    let old_version = env
+        .storage()
+        .instance()
+        .get(&INDEXER_VERSION)
+        .unwrap_or(1u32);
+    if new_version > MAX_KNOWN_VERSION {
+        return Err(SASError::IncompatibleDependency);
+    }
+    if new_version != old_version.saturating_add(1) {
+        return Err(SASError::InvalidValue);
+    }
+    if new_wasm_hash.to_array() == [0u8; 32] {
+        return Err(SASError::InvalidValue);
+    }
+    Ok(admin)
+}
+
+fn require_indexer_admin(env: &Env) -> Address {
+    match env.storage().instance().get(&INDEXER_ADMIN) {
+        Some(admin) => admin,
+        None => panic_with_error!(env, SASError::NotInitialized),
+    }
+}
+
+fn commit_upgrade(env: &Env, admin: &Address, new_wasm_hash: &BytesN<32>, new_version: u32) {
+    let old_wasm_hash = env
+        .storage()
+        .instance()
+        .get(&CURRENT_WASM_HASH)
+        .unwrap_or_else(|| BytesN::from_array(env, &[0u8; 32]));
+
+    env.storage().instance().set(&INDEXER_VERSION, &new_version);
+    env.storage()
+        .instance()
+        .set(&CURRENT_WASM_HASH, new_wasm_hash);
+    env.events().publish(
+        (CONTRACT_UPGRADED, admin.clone()),
+        ContractUpgradedEvent {
+            old_wasm_hash,
+            new_wasm_hash: new_wasm_hash.clone(),
+            authorizer: admin.clone(),
+        },
+    );
+}
+
 /// Number of UIDs recorded under one lookup key, across every chunk.
 ///
 /// The counter is the authoritative length of the index; the chunk vectors
 /// only carry the payload. Reads derive their chunk cursor from it so the
 /// write and read paths share one model.
+///
+/// Stored in **persistent** storage, on the same TTL horizon as the chunk
+/// entries it counts (see `index_address_uid` / `index_uid_uid`). Instance
+/// storage expires independently of persistent storage; if the counter lived
+/// there and instance storage lapsed, every per-key count would silently
+/// reset to zero while the chunk data survived, corrupting the index with
+/// duplicate UIDs on the next write (#219). Renewing on every read, not just
+/// every write, keeps a heavily-read/rarely-written key's counter alive as
+/// long as its chunks.
 fn index_total<K>(env: &Env, count_key: &K) -> u32
 where
     K: IntoVal<Env, Val>,
 {
-    env.storage().instance().get(count_key).unwrap_or(0)
+    let count: Option<u32> = env.storage().persistent().get(count_key);
+    if count.is_some() {
+        env.storage()
+            .persistent()
+            .extend_ttl(count_key, LEDGERS_IN_ONE_YEAR, LEDGERS_IN_ONE_YEAR);
+    }
+    count.unwrap_or(0)
 }
 
 /// Reads one index chunk, renewing the entry's TTL when it exists.
@@ -114,7 +268,10 @@ fn index_address_uid(env: &Env, key: &Address, uid: &UID, total_key: Symbol) {
         .extend_ttl(&storage_key, LEDGERS_IN_ONE_YEAR, LEDGERS_IN_ONE_YEAR);
 
     total += 1;
-    env.storage().instance().set(&count_key, &total);
+    env.storage().persistent().set(&count_key, &total);
+    env.storage()
+        .persistent()
+        .extend_ttl(&count_key, LEDGERS_IN_ONE_YEAR, LEDGERS_IN_ONE_YEAR);
     extend_instance_ttl(env);
 }
 
@@ -143,7 +300,10 @@ fn index_uid_uid(env: &Env, key: &UID, uid: &UID, total_key: Symbol) {
         .extend_ttl(&storage_key, LEDGERS_IN_ONE_YEAR, LEDGERS_IN_ONE_YEAR);
 
     total += 1;
-    env.storage().instance().set(&count_key, &total);
+    env.storage().persistent().set(&count_key, &total);
+    env.storage()
+        .persistent()
+        .extend_ttl(&count_key, LEDGERS_IN_ONE_YEAR, LEDGERS_IN_ONE_YEAR);
     extend_instance_ttl(env);
 }
 
@@ -251,7 +411,34 @@ impl Indexer {
         }
         env.storage().instance().set(&INDEXER_ADMIN, &admin);
         env.storage().instance().set(&SAS_CONTRACT, &sas);
+        if !env.storage().instance().has(&INDEXER_VERSION) {
+            env.storage().instance().set(&INDEXER_VERSION, &1u32);
+        }
         extend_instance_ttl(&env);
+    }
+
+    /// Returns the current monotonic contract version. Legacy initialized
+    /// instances without the version key are treated as genesis version 1.
+    pub fn get_version(env: Env) -> u32 {
+        extend_instance_ttl(&env);
+        env.storage().instance().get(&INDEXER_VERSION).unwrap_or(1)
+    }
+
+    /// Activates the next audited WASM version in place.
+    pub fn upgrade(env: Env, new_wasm_hash: BytesN<32>, new_version: u32) {
+        extend_instance_ttl(&env);
+        let layout_admin = match validate_upgrade(&env, &new_wasm_hash, new_version) {
+            Ok(values) => values,
+            Err(error) => panic_with_error!(&env, error),
+        };
+        let admin = require_indexer_admin(&env);
+        if admin != layout_admin {
+            panic_with_error!(&env, SASError::IncompatibleDependency);
+        }
+        admin.require_auth();
+
+        commit_upgrade(&env, &admin, &new_wasm_hash, new_version);
+        env.deployer().update_current_contract_wasm(new_wasm_hash);
     }
 
     /// Returns the admin address recorded by `init`, if the indexer has been
@@ -340,6 +527,31 @@ impl Indexer {
         env.storage().persistent().get(&(STATUS_KEY, uid))
     }
 
+    /// Total number of UIDs indexed under `address` as a recipient, across
+    /// every chunk. `0` if the key has never been indexed. A pure read: like
+    /// [`Indexer::index_total`], it renews the counter's TTL when found but
+    /// creates no storage for a key that was never indexed. Lets callers
+    /// compute pagination totals (`ceil(count / page_size)`) without
+    /// fetching every UID just to learn how many there are (#220).
+    pub fn get_count_by_recipient(env: Env, address: Address) -> u32 {
+        extend_instance_ttl(&env);
+        index_total(&env, &(RECIPIENT_TOTAL, address))
+    }
+
+    /// Total number of UIDs indexed under `schema_uid`. See
+    /// [`Indexer::get_count_by_recipient`] for semantics.
+    pub fn get_count_by_schema(env: Env, schema_uid: UID) -> u32 {
+        extend_instance_ttl(&env);
+        index_total(&env, &(SCHEMA_TOTAL, schema_uid))
+    }
+
+    /// Total number of UIDs indexed under `address` as an attester. See
+    /// [`Indexer::get_count_by_recipient`] for semantics.
+    pub fn get_count_by_attester(env: Env, address: Address) -> u32 {
+        extend_instance_ttl(&env);
+        index_total(&env, &(ATTESTER_TOTAL, address))
+    }
+
     /// Complete recipient history, oldest first.
     ///
     /// Walks every chunk backing the key: the index rolls over to a new chunk
@@ -396,6 +608,9 @@ impl Indexer {
         limit: u32,
     ) -> soroban_sdk::Vec<UID> {
         extend_instance_ttl(&env);
+        if let Err(err) = check_query_limit(&env) {
+            panic_with_error!(&env, err);
+        }
         if limit == 0 {
             return soroban_sdk::Vec::new(&env);
         }
@@ -446,12 +661,14 @@ impl Indexer {
     /// predecessors become `Replaced` and are filtered out in active-only
     /// mode but still appear in historical mode via the forward/reverse
     /// links (`get_replacement` / `get_replaces`).
-
     pub fn get_recipient_filtered(
         env: Env,
         recipient: Address,
         include_revoked: bool,
     ) -> soroban_sdk::Vec<UID> {
+        if let Err(err) = check_query_limit(&env) {
+            panic_with_error!(&env, err);
+        }
         let total = index_total(&env, &(RECIPIENT_TOTAL, recipient.clone()));
         collect_filtered(
             &env,
@@ -466,6 +683,9 @@ impl Indexer {
         schema_uid: UID,
         include_revoked: bool,
     ) -> soroban_sdk::Vec<UID> {
+        if let Err(err) = check_query_limit(&env) {
+            panic_with_error!(&env, err);
+        }
         let total = index_total(&env, &(SCHEMA_TOTAL, schema_uid.clone()));
         collect_filtered(
             &env,
@@ -480,6 +700,9 @@ impl Indexer {
         attester: Address,
         include_revoked: bool,
     ) -> soroban_sdk::Vec<UID> {
+        if let Err(err) = check_query_limit(&env) {
+            panic_with_error!(&env, err);
+        }
         let total = index_total(&env, &(ATTESTER_TOTAL, attester.clone()));
         collect_filtered(
             &env,
@@ -502,6 +725,9 @@ impl Indexer {
         limit: u32,
         include_revoked: bool,
     ) -> soroban_sdk::Vec<UID> {
+        if let Err(err) = check_query_limit(&env) {
+            panic_with_error!(&env, err);
+        }
         if limit == 0 {
             return soroban_sdk::Vec::new(&env);
         }
@@ -547,3 +773,7 @@ impl Indexer {
 
 #[cfg(test)]
 mod test;
+
+// Native test harness only; never exported in the contract WASM.
+#[cfg(any(test, feature = "testutils"))]
+pub mod chunking_test_support;

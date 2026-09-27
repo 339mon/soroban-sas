@@ -11,8 +11,10 @@ cargo-fuzz = true
 libfuzzer-sys = "0.4"
 soroban-sas-common = { path = "../packages/soroban-sas-common" }
 soroban-sas-sdk = { path = "../packages/soroban-sas-sdk" }
-soroban-sdk = "20.0.0"
+soroban-sdk = { version = "21.7.7", features = ["testutils"] }
+soroban-sas-indexer = { path = "../contracts/indexer", features = ["testutils"] }
 serde_json = "1.0"
+stellar-strkey = "0.0.8"
 
 [[bin]]
 name = "schema_fuzz"
@@ -27,6 +29,12 @@ test = false
 doc = false
 
 [[bin]]
+name = "eip712_encode_fuzz"
+path = "fuzz_targets/eip712_encode_fuzz.rs"
+test = false
+doc = false
+
+[[bin]]
 name = "xdr_decode_fuzz"
 path = "fuzz_targets/xdr_decode_fuzz.rs"
 test = false
@@ -35,5 +43,17 @@ doc = false
 [[bin]]
 name = "cli_json_fuzz"
 path = "fuzz_targets/cli_json_fuzz.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "indexer_chunking_fuzz"
+path = "fuzz_targets/indexer_chunking_fuzz.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "indexer_idempotency_fuzz"
+path = "fuzz_targets/indexer_idempotency_fuzz.rs"
 test = false
 doc = false

@@ -56,7 +56,7 @@
     []
   ],
   "ledger": {
-    "protocol_version": 20,
+    "protocol_version": 21,
     "sequence_number": 3153600,
     "timestamp": 0,
     "network_id": "0000000000000000000000000000000000000000000000000000000000000000",
@@ -162,6 +162,14 @@
                 "durability": "persistent",
                 "val": {
                   "map": [
+                    {
+                      "key": {
+                        "symbol": "deprecated"
+                      },
+                      "val": {
+                        "bool": false
+                      }
+                    },
                     {
                       "key": {
                         "symbol": "resolver"
@@ -339,7 +347,7 @@
             },
             "ext": "v0"
           },
-          15
+          6311999
         ]
       ],
       [
@@ -372,7 +380,7 @@
             },
             "ext": "v0"
           },
-          15
+          6311999
         ]
       ],
       [
@@ -607,6 +615,14 @@
             ],
             "data": {
               "map": [
+                {
+                  "key": {
+                    "symbol": "deprecated"
+                  },
+                  "val": {
+                    "bool": false
+                  }
+                },
                 {
                   "key": {
                     "symbol": "resolver"

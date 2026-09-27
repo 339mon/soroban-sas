@@ -5,10 +5,12 @@
 extern crate alloc;
 
 use soroban_sas_common::{
-    Attestation, SASError, LEDGERS_IN_ONE_YEAR, MAX_ATTESTATION_DATA_BYTES, UID,
+    Attestation, ContractUpgradedEvent, DelegationNonceKey, SASError, LEDGERS_IN_ONE_YEAR,
+    MAX_ATTESTATION_DATA_BYTES, UID,
 };
 use soroban_sdk::{
-    contract, contractimpl, panic_with_error, symbol_short, token, Address, Env, IntoVal, Symbol,
+    contract, contractimpl, panic_with_error, symbol_short, token, Address, BytesN, Env, IntoVal,
+    Symbol, TryFromVal, Val,
 };
 
 mod events;
@@ -19,6 +21,7 @@ mod events;
 pub struct SAS;
 
 pub const SAS_ADMIN: Symbol = symbol_short!("ADMIN");
+pub const PENDING_ADMIN: Symbol = symbol_short!("PEND_ADM");
 pub const SCHEMA_REGISTRY: Symbol = symbol_short!("REGISTRY");
 pub const INDEXER: Symbol = symbol_short!("INDEXER");
 pub const TREASURY: Symbol = symbol_short!("TREASURY");
@@ -36,6 +39,16 @@ pub const ATTESTER_KEY: Symbol = symbol_short!("ATTKEY");
 /// protection with one `instance` entry per attester (bounded growth) whose
 /// lifetime tracks contract liveness via `extend_instance_ttl`.
 pub const DELEGATION_NONCE: Symbol = symbol_short!("DELNONCE");
+/// Monotonic contract version. Missing on legacy initialized deployments,
+/// which are treated as genesis version 1.
+pub const SAS_VERSION: Symbol = symbol_short!("VERSION");
+/// Hash targeted by the most recent successful upgrade invocation.
+pub const CURRENT_WASM_HASH: Symbol = symbol_short!("WASMHASH");
+/// Emergency pause flag. When `true`, write operations are blocked (#255).
+pub const PAUSED: Symbol = symbol_short!("PAUSED");
+/// Highest version whose upgrade path this build knows and has been audited
+/// to activate. Increase only as part of a reviewed release.
+pub const MAX_KNOWN_VERSION: u32 = 2;
 /// Maximum number of attestations in one multi_attest invocation. This keeps
 /// authorization and storage work within the measured Soroban budget envelope.
 pub const MAX_MULTI_ATTEST: u32 = 100;
@@ -73,6 +86,74 @@ fn require_registry(env: &Env) -> Address {
     }
 }
 
+/// Checks if the contract is paused. Returns `true` if paused, `false` otherwise.
+fn is_paused_status(env: &Env) -> bool {
+    env.storage().instance().get(&PAUSED).unwrap_or(false)
+}
+
+/// Validates that an attestation has not expired. Returns `Ok(())` if valid,
+/// or `Err(SASError::AlreadyExpired)` if the expiration time is set and has passed.
+fn validate_expiration(env: &Env, expiration_time: u64) -> Result<(), SASError> {
+    if expiration_time != 0 && expiration_time <= env.ledger().timestamp() {
+        return Err(SASError::AlreadyExpired);
+    }
+    Ok(())
+}
+
+fn required_upgrade_address(env: &Env, key: &Symbol) -> Result<Address, SASError> {
+    let Some(raw): Option<Val> = env.storage().instance().get(key) else {
+        return Err(SASError::IncompatibleDependency);
+    };
+    Address::try_from_val(env, &raw).map_err(|_| SASError::IncompatibleDependency)
+}
+
+fn validate_upgrade(
+    env: &Env,
+    new_wasm_hash: &BytesN<32>,
+    new_version: u32,
+) -> Result<Address, SASError> {
+    // This is a pre-activation sanity read of the existing layout. It cannot
+    // execute or inspect the candidate WASM before Soroban installs it.
+    let admin = required_upgrade_address(env, &SAS_ADMIN)?;
+    let _registry = required_upgrade_address(env, &SCHEMA_REGISTRY)?;
+    if env.storage().instance().has(&INDEXER) {
+        let _indexer = required_upgrade_address(env, &INDEXER)?;
+    }
+
+    let old_version = env.storage().instance().get(&SAS_VERSION).unwrap_or(1u32);
+    if new_version > MAX_KNOWN_VERSION {
+        return Err(SASError::IncompatibleDependency);
+    }
+    if new_version != old_version.saturating_add(1) {
+        return Err(SASError::InvalidValue);
+    }
+    if new_wasm_hash.to_array() == [0u8; 32] {
+        return Err(SASError::InvalidValue);
+    }
+    Ok(admin)
+}
+
+fn commit_upgrade(env: &Env, admin: &Address, new_wasm_hash: &BytesN<32>, new_version: u32) {
+    let old_wasm_hash = env
+        .storage()
+        .instance()
+        .get(&CURRENT_WASM_HASH)
+        .unwrap_or_else(|| BytesN::from_array(env, &[0u8; 32]));
+
+    env.storage().instance().set(&SAS_VERSION, &new_version);
+    env.storage()
+        .instance()
+        .set(&CURRENT_WASM_HASH, new_wasm_hash);
+    events::publish_contract_upgraded(
+        env,
+        ContractUpgradedEvent {
+            old_wasm_hash,
+            new_wasm_hash: new_wasm_hash.clone(),
+            authorizer: admin.clone(),
+        },
+    );
+}
+
 #[contractimpl]
 impl SAS {
     /// Compatibility probe used by `Indexer::init` before binding to this
@@ -80,6 +161,15 @@ impl SAS {
     /// contract rather than merely a contract address.
     pub fn sasv1(_env: Env) -> bool {
         true
+    }
+
+    /// Returns the current contract administrator.
+    ///
+    /// Panics with [`SASError::NotInitialized`] when the contract has not
+    /// been initialized yet.
+    pub fn admin(env: Env) -> Address {
+        extend_instance_ttl(&env);
+        require_admin(&env)
     }
 
     pub fn init(env: Env, admin: Address, registry: Address) {
@@ -118,7 +208,99 @@ impl SAS {
         }
         env.storage().instance().set(&SAS_ADMIN, &admin);
         env.storage().instance().set(&SCHEMA_REGISTRY, &registry);
+        if !env.storage().instance().has(&SAS_VERSION) {
+            env.storage().instance().set(&SAS_VERSION, &1u32);
+        }
         extend_instance_ttl(&env);
+    }
+
+    /// Returns the current monotonic contract version. Legacy initialized
+    /// instances without the version key are treated as genesis version 1.
+    pub fn get_version(env: Env) -> u32 {
+        extend_instance_ttl(&env);
+        env.storage().instance().get(&SAS_VERSION).unwrap_or(1)
+    }
+
+    /// Activates the next audited WASM version in place.
+    pub fn upgrade(env: Env, new_wasm_hash: BytesN<32>, new_version: u32) {
+        extend_instance_ttl(&env);
+        let layout_admin = match validate_upgrade(&env, &new_wasm_hash, new_version) {
+            Ok(values) => values,
+            Err(error) => panic_with_error!(&env, error),
+        };
+        let admin = require_admin(&env);
+        if admin != layout_admin {
+            panic_with_error!(&env, SASError::IncompatibleDependency);
+        }
+        admin.require_auth();
+
+        commit_upgrade(&env, &admin, &new_wasm_hash, new_version);
+        env.deployer().update_current_contract_wasm(new_wasm_hash);
+    }
+
+    /// Step 1 of two-step admin transfer (#228).
+    /// Current admin authorizes proposing `new_admin`.
+    /// Overwrites any pending proposal (allows cancellation by re-proposing self or another).
+    /// Emits `AdminTransferProposed`.
+    pub fn propose_admin(env: Env, new_admin: Address) {
+        extend_instance_ttl(&env);
+        let current_admin = require_admin(&env);
+        current_admin.require_auth();
+
+        env.storage().instance().set(&PENDING_ADMIN, &new_admin);
+        extend_instance_ttl(&env);
+
+        events::publish_admin_transfer_proposed(&env, &current_admin, &new_admin);
+    }
+
+    /// Step 2 of two-step admin transfer (#228).
+    /// Pending admin authorizes accepting ownership.
+    /// Panics `NotInitialized` if no proposal is pending.
+    /// Overwrites `SAS_ADMIN` with `pending_admin` and removes `PENDING_ADMIN`.
+    /// Emits `AdminTransferCompleted`.
+    pub fn accept_admin(env: Env) {
+        extend_instance_ttl(&env);
+        let pending_admin: Address = match env.storage().instance().get(&PENDING_ADMIN) {
+            Some(admin) => admin,
+            None => panic_with_error!(&env, SASError::NotInitialized),
+        };
+        pending_admin.require_auth();
+
+        let old_admin = require_admin(&env);
+        env.storage().instance().set(&SAS_ADMIN, &pending_admin);
+        env.storage().instance().remove(&PENDING_ADMIN);
+        extend_instance_ttl(&env);
+
+        events::publish_admin_transfer_completed(&env, &old_admin, &pending_admin);
+    }
+
+    /// Emergency pause: blocks all write operations while keeping read-only
+    /// operations active (#255). Only the admin can pause. Emits `ContractPaused`.
+    pub fn pause(env: Env) {
+        extend_instance_ttl(&env);
+        let admin = require_admin(&env);
+        admin.require_auth();
+        env.storage().instance().set(&PAUSED, &true);
+        extend_instance_ttl(&env);
+        events::publish_contract_paused(&env, admin);
+    }
+
+    /// Emergency unpause: resumes write operations after a `pause` (#255).
+    /// Only the admin can unpause. Emits `ContractUnpaused`.
+    pub fn unpause(env: Env) {
+        extend_instance_ttl(&env);
+        let admin = require_admin(&env);
+        admin.require_auth();
+        env.storage().instance().set(&PAUSED, &false);
+        extend_instance_ttl(&env);
+        events::publish_contract_unpaused(&env, admin);
+    }
+
+    /// Public read: returns whether the contract is currently paused (#255).
+    /// Read-only entry points remain active even when paused.
+    pub fn is_paused(env: Env) -> bool {
+        extend_instance_ttl(&env);
+        is_paused_status(&env)
     }
 
     /// Returns the bound indexer, if one has been configured.
@@ -169,7 +351,11 @@ impl SAS {
         if amount <= 0 {
             panic_with_error!(&env, SASError::InvalidValue);
         }
-        env.storage().instance().set(&FEE_CONFIG, &(token, amount));
+        let old = env.storage().instance().get(&FEE_CONFIG);
+        env.storage()
+            .instance()
+            .set(&FEE_CONFIG, &(token.clone(), amount));
+        events::publish_fee_config_updated(&env, old, Some((token, amount)), admin);
         extend_instance_ttl(&env);
     }
 
@@ -179,7 +365,9 @@ impl SAS {
         extend_instance_ttl(&env);
         let admin = require_admin(&env);
         admin.require_auth();
+        let old = env.storage().instance().get(&FEE_CONFIG);
         env.storage().instance().remove(&FEE_CONFIG);
+        events::publish_fee_config_updated(&env, old, None, admin);
         extend_instance_ttl(&env);
     }
 
@@ -214,6 +402,9 @@ impl SAS {
     }
 
     pub fn attest(env: Env, attestation: Attestation) -> UID {
+        if is_paused_status(&env) {
+            panic_with_error!(&env, SASError::ContractPaused);
+        }
         attestation.attester.require_auth();
         Self::attest_internal(env, attestation)
     }
@@ -225,6 +416,9 @@ impl SAS {
         signature: soroban_sdk::BytesN<64>,
         public_key: soroban_sdk::BytesN<32>,
     ) -> UID {
+        if is_paused_status(&env) {
+            panic_with_error!(&env, SASError::ContractPaused);
+        }
         if attestation.revocation_time != 0 {
             panic_with_error!(&env, SASError::AlreadyRevoked);
         }
@@ -274,13 +468,14 @@ impl SAS {
             panic_with_error!(&env, SASError::InvalidUID);
         }
 
-        if attestation.expiration_time != 0
-            && attestation.expiration_time <= env.ledger().timestamp()
-        {
-            panic_with_error!(&env, SASError::AlreadyExpired);
+        if let Err(err) = validate_expiration(&env, attestation.expiration_time) {
+            panic_with_error!(&env, err);
         }
 
         if let Err(err) = soroban_sas_common::validate_recipient(&env, &attestation.recipient) {
+            panic_with_error!(&env, err);
+        }
+        if let Err(err) = soroban_sas_common::validate_recipient(&env, &attestation.attester) {
             panic_with_error!(&env, err);
         }
         if attestation.recipient == attestation.attester {
@@ -394,7 +589,7 @@ impl SAS {
             return LEDGERS_IN_ONE_YEAR;
         }
         let seconds_remaining = expiration_time - now;
-        let ledgers_remaining = ((seconds_remaining + 4) / 5) as u32;
+        let ledgers_remaining = seconds_remaining.div_ceil(5) as u32;
         let max_ttl = LEDGERS_IN_ONE_YEAR * 5;
         ledgers_remaining
             .saturating_add(LEDGERS_IN_ONE_YEAR)
@@ -468,6 +663,38 @@ impl SAS {
     /// (`NotInitialized` otherwise), and reports a still-failing Indexer as
     /// `SASError::IndexerUnavailable` so callers know to retry later. On
     /// success emits `Reindexed(uid)`.
+
+    pub fn bulk_reindex(env: Env, uids: soroban_sdk::Vec<UID>) -> soroban_sdk::Vec<UID> {
+        extend_instance_ttl(&env);
+        if uids.len() > 100 {
+            panic_with_error!(&env, SASError::BatchTooLarge);
+        }
+
+        let Some(indexer) = env.storage().instance().get::<_, Address>(&INDEXER) else {
+            panic_with_error!(&env, SASError::NotInitialized);
+        };
+
+        let mut failed = soroban_sdk::Vec::new(&env);
+        for uid in uids.iter() {
+            if let Some(attestation) = env.storage().persistent().get::<_, Attestation>(&uid) {
+                let outcome = env.try_invoke_contract::<(), soroban_sdk::Error>(
+                    &indexer,
+                    &soroban_sdk::Symbol::new(&env, "index_attestation"),
+                    soroban_sdk::vec![&env, attestation.into_val(&env)],
+                );
+                if outcome.is_err() {
+                    failed.push_back(uid);
+                } else {
+                    env.events()
+                        .publish((soroban_sas_common::events::REINDEXED, uid), ());
+                }
+            } else {
+                failed.push_back(uid);
+            }
+        }
+        failed
+    }
+
     pub fn reindex_attestation(env: Env, uid: UID) {
         extend_instance_ttl(&env);
         let Some(attestation) = env.storage().persistent().get::<_, Attestation>(&uid) else {
@@ -494,6 +721,9 @@ impl SAS {
     }
 
     pub fn revoke(env: Env, uid: UID) {
+        if is_paused_status(&env) {
+            panic_with_error!(&env, SASError::ContractPaused);
+        }
         let Some(attestation) = env.storage().persistent().get::<_, Attestation>(&uid) else {
             panic_with_error!(&env, SASError::AttestationNotFound);
         };
@@ -505,6 +735,9 @@ impl SAS {
     /// `authorizer` must either be the original attester, or an authorized
     /// delegate / primary owner of the schema recorded in the registry (#7).
     pub fn revoke_by_authorizer(env: Env, uid: UID, authorizer: Address) {
+        if is_paused_status(&env) {
+            panic_with_error!(&env, SASError::ContractPaused);
+        }
         let Some(attestation) = env.storage().persistent().get::<_, Attestation>(&uid) else {
             panic_with_error!(&env, SASError::AttestationNotFound);
         };
@@ -532,6 +765,9 @@ impl SAS {
 
     /// Convenience alias for `revoke_by_authorizer` using a delegate address (#7).
     pub fn revoke_by_delegate(env: Env, uid: UID, delegate: Address) {
+        if is_paused_status(&env) {
+            panic_with_error!(&env, SASError::ContractPaused);
+        }
         Self::revoke_by_authorizer(env, uid, delegate);
     }
 
@@ -542,6 +778,9 @@ impl SAS {
         signature: soroban_sdk::BytesN<64>,
         public_key: soroban_sdk::BytesN<32>,
     ) {
+        if is_paused_status(&env) {
+            panic_with_error!(&env, SASError::ContractPaused);
+        }
         let Some(attestation) = env.storage().persistent().get::<_, Attestation>(&uid) else {
             panic_with_error!(&env, SASError::AttestationNotFound);
         };
@@ -639,7 +878,16 @@ impl SAS {
     /// revocable and not already revoked, and `new_data.attester`/`recipient`
     /// to match the old attestation's — a replacement changes what is being
     /// claimed, not who is claiming it or about whom.
+    ///
+    /// `new_data.expiration_time` must not shorten the old attestation's
+    /// expiration: if both are non-zero, `new_data.expiration_time` must be
+    /// `>= old.expiration_time`, or this panics with `SASError::InvalidTTL`.
+    /// Replacing with `expiration_time == 0` (perpetual) is always allowed.
+    /// See `docs/attestations.md` and `specs/protocol-v1.md` (#252).
     pub fn replace_attestation(env: Env, old_uid: UID, new_data: Attestation) -> UID {
+        if is_paused_status(&env) {
+            panic_with_error!(&env, SASError::ContractPaused);
+        }
         extend_instance_ttl(&env);
         let Some(old) = env.storage().persistent().get::<_, Attestation>(&old_uid) else {
             panic_with_error!(&env, SASError::AttestationNotFound);
@@ -653,8 +901,23 @@ impl SAS {
         if old.revocation_time != 0 {
             panic_with_error!(&env, SASError::AlreadyRevoked);
         }
+        if validate_expiration(&env, old.expiration_time).is_err() {
+            panic_with_error!(&env, SASError::InvalidTTL);
+        }
         if new_data.attester != old.attester || new_data.recipient != old.recipient {
             panic_with_error!(&env, SASError::Unauthorized);
+        }
+        // Replacements may extend an expiration or make it perpetual
+        // (`expiration_time == 0`), but never shorten it: an attester could
+        // otherwise bypass resolver revocation checks by "replacing" a valid
+        // multi-year attestation with one whose expiration is already in the
+        // past, expiring it immediately without an `on_revoke` callback or an
+        // `AttestationRevoked` event (#252).
+        if old.expiration_time != 0
+            && new_data.expiration_time != 0
+            && new_data.expiration_time < old.expiration_time
+        {
+            panic_with_error!(&env, SASError::InvalidTTL);
         }
 
         let new_data = Attestation {
@@ -681,6 +944,9 @@ impl SAS {
         env: Env,
         attestations: soroban_sdk::Vec<Attestation>,
     ) -> soroban_sdk::Vec<UID> {
+        if is_paused_status(&env) {
+            panic_with_error!(&env, SASError::ContractPaused);
+        }
         extend_instance_ttl(&env);
         if attestations.len() > MAX_MULTI_ATTEST {
             panic_with_error!(&env, SASError::BatchTooLarge);
@@ -722,6 +988,9 @@ impl SAS {
         token: Address,
         value: i128,
     ) -> UID {
+        if is_paused_status(&env) {
+            panic_with_error!(&env, SASError::ContractPaused);
+        }
         extend_instance_ttl(&env);
         if value < 0 {
             panic_with_error!(&env, SASError::InvalidValue);
@@ -764,6 +1033,9 @@ impl SAS {
     /// dedup, like `multi_attest`), and the actual state mutations go
     /// through `revoke_internal` so storage-read/auth work is not repeated.
     pub fn multi_revoke(env: Env, uids: soroban_sdk::Vec<UID>) {
+        if is_paused_status(&env) {
+            panic_with_error!(&env, SASError::ContractPaused);
+        }
         extend_instance_ttl(&env);
         if uids.len() > MAX_MULTI_REVOKE {
             panic_with_error!(&env, SASError::BatchTooLarge);
@@ -826,6 +1098,9 @@ impl SAS {
     /// Re-registering after a revocation is allowed and starts a new
     /// version.
     pub fn register_attester_key(env: Env, attester: Address, public_key: soroban_sdk::BytesN<32>) {
+        if is_paused_status(&env) {
+            panic_with_error!(&env, SASError::ContractPaused);
+        }
         extend_instance_ttl(&env);
         attester.require_auth();
 
@@ -878,6 +1153,9 @@ impl SAS {
         attester: Address,
         new_public_key: soroban_sdk::BytesN<32>,
     ) {
+        if is_paused_status(&env) {
+            panic_with_error!(&env, SASError::ContractPaused);
+        }
         attester.require_auth();
 
         let key = (ATTESTER_KEY, attester.clone());
@@ -931,6 +1209,9 @@ impl SAS {
     /// so a future `register_attester_key` call continues the version
     /// sequence instead of restarting at `1`.
     pub fn revoke_attester_key(env: Env, attester: Address) {
+        if is_paused_status(&env) {
+            panic_with_error!(&env, SASError::ContractPaused);
+        }
         attester.require_auth();
 
         let key = (ATTESTER_KEY, attester.clone());
@@ -990,7 +1271,9 @@ impl SAS {
 
     fn consume_delegation_nonce(env: &Env, attester: &Address, nonce: u64) {
         extend_instance_ttl(env);
-        let key = (DELEGATION_NONCE, attester.clone());
+        let key = DelegationNonceKey {
+            attester: attester.clone(),
+        };
         if let Some(last) = env.storage().instance().get::<_, u64>(&key) {
             if nonce <= last {
                 panic_with_error!(env, SASError::DelegationReplay);
@@ -1018,10 +1301,8 @@ impl SAS {
         if attestation.revocation_time != 0 {
             panic_with_error!(&env, SASError::AlreadyRevoked);
         }
-        if attestation.expiration_time != 0
-            && env.ledger().timestamp() >= attestation.expiration_time
-        {
-            panic_with_error!(&env, SASError::AlreadyExpired);
+        if let Err(err) = validate_expiration(&env, attestation.expiration_time) {
+            panic_with_error!(&env, err);
         }
 
         // An on-chain revocation of the same UID also invalidates the
@@ -1076,9 +1357,7 @@ impl SAS {
             if attestation.revocation_time != 0 {
                 return false;
             }
-            if attestation.expiration_time != 0
-                && env.ledger().timestamp() >= attestation.expiration_time
-            {
+            if validate_expiration(&env, attestation.expiration_time).is_err() {
                 return false;
             }
             true
@@ -1106,6 +1385,22 @@ impl SAS {
         } else {
             None
         }
+    }
+
+    /// Returns the highest delegation nonce consumed for `attester`, or `None`
+    /// if no delegated operation has ever been performed for this attester (#236).
+    ///
+    /// Extends instance TTL on every call.
+    ///
+    /// Nonce semantics:
+    /// - `None`: No nonce has been consumed; any nonce ≥ 1 is valid for the next operation.
+    /// - `Some(n)`: `n` is the highest nonce consumed so far; the next valid nonce is any value strictly greater than `n` (i.e. > `n`).
+    pub fn get_delegation_nonce(env: Env, attester: Address) -> Option<u64> {
+        extend_instance_ttl(&env);
+        let key = DelegationNonceKey { attester };
+        let nonce = env.storage().instance().get::<_, u64>(&key);
+        extend_instance_ttl(&env);
+        nonce
     }
 
     /// Returns `attester`'s registered delegated-verification key record, or
@@ -1140,3 +1435,7 @@ mod demo;
 mod test;
 #[cfg(test)]
 mod test_extra;
+#[cfg(test)]
+mod test_issue_242;
+#[cfg(test)]
+mod test_issue_252;

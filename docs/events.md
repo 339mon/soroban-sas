@@ -159,20 +159,40 @@ is `None` the first time a treasury address is set.
 
 ## ContractUpgraded
 
-Emitted by the schema registry on a successful `upgrade`, immediately
-before the new WASM takes effect.
+Emitted by SAS, Indexer, and the schema registry on a successful `upgrade`,
+immediately before the new WASM swap is requested. The schema registry
+additionally publishes its own versioned `UPGRADE` event (see
+[SchemaRegistry UPGRADE](#schemaregistry-upgrade) below).
 
 - Topics: `("UPGRADED", authorizer: Address)`
 - Data: `ContractUpgradedEvent { old_wasm_hash: BytesN<32>, new_wasm_hash: BytesN<32>, authorizer: Address }`
 
-`upgrade` requires authorization from the registry admin. Soroban does not
-expose a way for a contract to read its own currently installed WASM hash,
-so the registry tracks the hash itself in instance storage purely to
-report it here; the very first upgrade on a deployment therefore reports
-`old_wasm_hash` equal to `new_wasm_hash` rather than the hash the contract
-was originally deployed with. If the WASM swap itself fails (for example,
-`new_wasm_hash` has no corresponding uploaded WASM), Soroban rolls back the
-entire invocation, so this event is never emitted for a failed upgrade.
+`upgrade` requires authorization from the emitting contract's administrator.
+Soroban does not expose a way for a contract to read its own installed WASM
+hash. SAS, Indexer, and the schema registry therefore use an all-zero
+`old_wasm_hash` as an explicit "unknown" sentinel on the first upgrade of a
+legacy/genesis instance, then track the successfully targeted hash in instance
+storage (`WASMHASH`) so later events report the hash they replaced. Operators
+must use their release manifest for the authoritative genesis hash.
+If the WASM swap fails (for example, the hash was not uploaded), Soroban rolls
+back the invocation, so no success event is committed to ledger transaction
+metadata.
+
+## SchemaRegistry UPGRADE
+
+Emitted by the schema registry on every successful `upgrade`, alongside
+`ContractUpgraded`.
+
+- Topics: `("UPGRADE", old_version: u32, new_version: u32)`
+- Data: `(old_version: u32, new_version: u32, new_wasm_hash: BytesN<32>)`
+
+`old_version` and `new_version` are topics so an indexer can follow registry
+activations by monotonic version without decoding the payload, while
+`ContractUpgraded` carries the WASM hashes the registry tracks. Both events are
+published after the new version and hash have been written to instance storage
+and before `update_current_contract_wasm` is requested, so a failed swap
+discards both along with every other state change made during the invocation.
+`upgrade` requires authorization from the registry admin.
 
 ## SchemaDelegateAdded
 
@@ -192,11 +212,48 @@ Emitted by the schema registry on a successful `remove_delegate`.
 
 `remove_delegate` requires authorization from the primary schema owner (`authorizer`).
 
+## AdminTransferProposed
+
+Emitted by the SAS contract on a successful `propose_admin`.
+
+- Topics: `("ADMPROP", current_admin: Address)`
+- Data: `AdminTransferProposedEvent { current_admin: Address, proposed_admin: Address }`
+
+`propose_admin` requires authorization from `current_admin`. It stores `proposed_admin` under instance storage key `PENDING_ADMIN`.
+
+## AdminTransferCompleted
+
+Emitted by the SAS contract on a successful `accept_admin`.
+
+- Topics: `("ADMCOMP", old_admin: Address)`
+- Data: `AdminTransferCompletedEvent { old_admin: Address, new_admin: Address }`
+
+`accept_admin` requires authorization from `new_admin` (the pending admin). It finalizes the two-step admin transfer, overwriting `SAS_ADMIN` with `new_admin` and clearing `PENDING_ADMIN`.
+
+## SchemaOwnershipTransferred
+
+Emitted by the schema registry on a successful `transfer_schema_ownership`.
+
+- Topics: `("SCHOWN", schema_uid: UID)`
+- Data: `SchemaOwnershipTransferredEvent { schema_uid: UID, old_owner: Address, new_owner: Address }`
+
+`transfer_schema_ownership` requires authorization from `old_owner` (the current schema creator). Deprecated schemas cannot be transferred. Once transferred, `new_owner` becomes the creator/owner who may manage delegates and deprecate the schema.
+
+## SchemaDeprecated
+
+Emitted by the schema registry on a successful (state-changing) `deprecate`.
+
+- Topics: `("SCHDEP", schema_uid: UID)`
+- Data: `SchemaDeprecatedEvent { schema_uid: UID, deprecated_by: Address }`
+
+`deprecate` requires authorization from `deprecated_by`, who must be either the schema's creator or the registry admin (see `docs/schemas.md#deprecation-authorization`). Only the call that actually flips the schema from active to deprecated emits this event; a repeat call against an already-deprecated schema is a silent idempotent no-op and does not re-publish it.
+
 ## Security-sensitive configuration changes
 
-`IndexerUpdated`, `SchemaFeeUpdated`, `TreasuryUpdated`, and
-`ContractUpgraded` share a design: each authorization check
-(`require_auth`) happens before any state is read or written, and each
+`IndexerUpdated`, `SchemaFeeUpdated`, `TreasuryUpdated`, `ContractUpgraded`,
+and the schema registry's versioned `UPGRADE` share a design: each
+authorization check
+(`require_auth`) happens before any state is written, and each
 event is published only after the corresponding storage write has already
 succeeded (or, for `upgrade`, immediately before the WASM swap that either
 completes the invocation or rolls the whole thing back). A failed
@@ -238,3 +295,27 @@ match parse_contract_event(&event) {
 
 `parse_events` filters a whole batch, and `parse_event` accepts raw
 `ScVal` topics and data for consumers that decode XDR themselves.
+
+## FeeConfigUpdated
+
+Emitted by SAS immediately after every successful `set_fee` or `clear_fee` storage write.
+
+- Topic constant: `soroban_sas_common::events::FEECFG_UPDATED`.
+- Topics: `("FEECFGUPD", authorizer: Address)`.
+- Data: `FeeConfigUpdatedEvent { old_token: PreviousAddress, old_amount: Option<i128>, new_token: PreviousAddress, new_amount: Option<i128>, authorizer: Address }`.
+
+`PreviousAddress` is this repository's SDK 20-compatible optional address type:
+`None` encodes as `["None"]`, and `Some(address)` as `["Some", address]`.
+Native optional amounts encode as XDR `Void` or `I128`. The SDK parser exposes
+both tokens as `Option<ScAddress>` in `SasEvent::FeeConfigUpdated`.
+
+The first fee configuration has absent old values; subsequent changes include
+the previous token and amount. Clearing includes the previous values and absent
+new values. Clearing an already absent fee emits all four values as absent.
+Configured amounts are positive; absence is distinct from zero.
+
+Both entrypoints require admin authorization. Unauthorized calls and nonpositive
+`set_fee` amounts emit no committed event and leave the fee unchanged. For events
+from the trusted SAS contract, the presence of this event is proof the change
+was authorized and durably applied. Use `parse_contract_event_verified` with the
+SAS contract allowlist to reject events spoofed by another contract.

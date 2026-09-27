@@ -12,52 +12,52 @@
 //! one contract, and one nonce. `Attestation.revocation_time` is deliberately
 //! excluded from the digest because it is mutated on-chain by revocation.
 
+//! # Off-chain verification example
+//!
+//! An off-chain verifier can reproduce the exact digest an issuer signed
+//! without calling the on-chain contract. This is useful for wallets,
+//! relayers, and indexers that need to validate attestations before
+//! or without interacting with the ledger.
+//!
+//! ```rust,no_run
+//! use soroban_sas_common::{
+//!     hash_offchain_attestation, Attestation, AttestationDomain, UID,
+//! };
+//! use soroban_sdk::{testutils::Address as _, Address, BytesN, Env};
+//!
+//! let env = Env::default();
+//!
+//! // Build the domain separator binding this signature to one network,
+//! // one SAS contract, and one caller-chosen nonce.
+//! let domain = AttestationDomain {
+//!     network_id: BytesN::from_array(&env, &[0u8; 32]), // SHA-256 of passphrase
+//!     contract: Address::generate(&env),
+//!     nonce: 42,
+//! };
+//!
+//! // Construct the attestation (fields must match what the issuer signed).
+//! let attestation = Attestation {
+//!     uid: UID(BytesN::from_array(&env, &[1u8; 32])),
+//!     schema_uid: UID(BytesN::from_array(&env, &[2u8; 32])),
+//!     time: 1_700_000_000,
+//!     expiration_time: 0,
+//!     revocation_time: 0,
+//!     ref_uid: UID(BytesN::from_array(&env, &[0u8; 32])),
+//!     recipient: Address::generate(&env),
+//!     attester: Address::generate(&env),
+//!     revocable: true,
+//!     data: soroban_sdk::Bytes::new(&env),
+//! };
+//!
+//! // Reproduce the deterministic digest the issuer signed.
+//! let digest = hash_offchain_attestation(&env, &attestation, &domain);
+//!
+//! // Verify with the issuer's ed25519 public key and signature.
+//! // verify_offchain_signature(&env, &digest, &public_key, &signature);
+//! ```
+
 use crate::Attestation;
 use soroban_sdk::{contracttype, xdr::ToXdr, Address, Bytes, BytesN, Env};
-
-/// # Off-chain verification example
-///
-/// An off-chain verifier can reproduce the exact digest an issuer signed
-/// without calling the on-chain contract. This is useful for wallets,
-/// relayers, and indexers that need to validate attestations before
-/// or without interacting with the ledger.
-///
-/// ```rust,no_run
-/// use soroban_sas_common::{
-///     hash_offchain_attestation, Attestation, AttestationDomain, UID,
-/// };
-/// use soroban_sdk::{testutils::Address as _, Address, BytesN, Env};
-///
-/// let env = Env::default();
-///
-/// // Build the domain separator binding this signature to one network,
-/// // one SAS contract, and one caller-chosen nonce.
-/// let domain = AttestationDomain {
-///     network_id: BytesN::from_array(&env, &[0u8; 32]), // SHA-256 of passphrase
-///     contract: Address::generate(&env),
-///     nonce: 42,
-/// };
-///
-/// // Construct the attestation (fields must match what the issuer signed).
-/// let attestation = Attestation {
-///     uid: UID(BytesN::from_array(&env, &[1u8; 32])),
-///     schema_uid: UID(BytesN::from_array(&env, &[2u8; 32])),
-///     time: 1_700_000_000,
-///     expiration_time: 0,
-///     revocation_time: 0,
-///     ref_uid: UID(BytesN::from_array(&env, &[0u8; 32])),
-///     recipient: Address::generate(&env),
-///     attester: Address::generate(&env),
-///     revocable: true,
-///     data: soroban_sdk::Bytes::new(&env),
-/// };
-///
-/// // Reproduce the deterministic digest the issuer signed.
-/// let digest = hash_offchain_attestation(&env, &attestation, &domain);
-///
-/// // Verify with the issuer's ed25519 public key and signature.
-/// // verify_offchain_signature(&env, &digest, &public_key, &signature);
-/// ```
 
 /// Prefix distinguishing SAS off-chain payloads from other signed messages
 /// (analogous to EIP-191's `\x19\x01` prefix).
@@ -92,7 +92,7 @@ pub fn hash_domain(env: &Env, domain: &AttestationDomain) -> BytesN<32> {
     buf.append(&Bytes::from_slice(env, &domain.network_id.to_array()));
     buf.append(&domain.contract.clone().to_xdr(env));
     buf.append(&Bytes::from_slice(env, &domain.nonce.to_be_bytes()));
-    env.crypto().sha256(&buf)
+    env.crypto().sha256(&buf).into()
 }
 
 /// Hashes an `Attestation` with a fixed, deterministic field layout.
@@ -118,7 +118,7 @@ pub fn hash_attestation_struct(env: &Env, attestation: &Attestation) -> BytesN<3
     buf.append(&Bytes::from_slice(env, &[attestation.revocable as u8]));
     let data_hash = env.crypto().sha256(&attestation.data);
     buf.append(&Bytes::from_slice(env, &data_hash.to_array()));
-    env.crypto().sha256(&buf)
+    env.crypto().sha256(&buf).into()
 }
 
 /// Computes the digest an issuer signs for an off-chain attestation:
@@ -137,7 +137,7 @@ pub fn hash_offchain_attestation(
         env,
         &hash_attestation_struct(env, attestation).to_array(),
     ));
-    env.crypto().sha256(&buf)
+    env.crypto().sha256(&buf).into()
 }
 
 /// Computes the digest for a delegated on-chain revocation. The domain binds
@@ -156,7 +156,7 @@ pub fn hash_delegated_revocation(
     ));
     buf.append(&Bytes::from_slice(env, &uid.0.to_array()));
     buf.append(&attester.clone().to_xdr(env));
-    env.crypto().sha256(&buf)
+    env.crypto().sha256(&buf).into()
 }
 
 /// Verifies an ed25519 signature over a payload digest.
@@ -230,6 +230,7 @@ mod golden_vectors {
     fn network_id_from_passphrase(env: &Env, passphrase: &str) -> BytesN<32> {
         env.crypto()
             .sha256(&Bytes::from_slice(env, passphrase.as_bytes()))
+            .into()
     }
 
     fn account_address(env: &Env, public_key: &[u8; 32]) -> Address {
@@ -523,6 +524,211 @@ mod golden_vectors {
             signature.to_bytes(),
             expected_sig,
             "Golden vector #5 signature mismatch - ed25519 implementation may have changed"
+        );
+    }
+}
+
+#[cfg(test)]
+mod field_mutations {
+    use super::*;
+    use crate::UID;
+    use soroban_sdk::{
+        xdr::{Hash, ScAddress},
+        TryFromVal,
+    };
+
+    fn address(env: &Env, seed: u8) -> Address {
+        Address::try_from_val(env, &ScAddress::Contract(Hash([seed; 32]))).unwrap()
+    }
+
+    fn fixture(env: &Env) -> (Attestation, AttestationDomain) {
+        (
+            Attestation {
+                uid: UID(BytesN::from_array(env, &[1; 32])),
+                schema_uid: UID(BytesN::from_array(env, &[2; 32])),
+                time: 1_700_000_000,
+                expiration_time: 1_800_000_000,
+                revocation_time: 0,
+                ref_uid: UID(BytesN::from_array(env, &[3; 32])),
+                recipient: address(env, 4),
+                attester: address(env, 5),
+                revocable: true,
+                data: Bytes::from_slice(env, b"fixed payload"),
+            },
+            AttestationDomain {
+                network_id: BytesN::from_array(env, &[6; 32]),
+                contract: address(env, 7),
+                nonce: 42,
+            },
+        )
+    }
+
+    #[test]
+    fn uid_changes_digest() {
+        let env = Env::default();
+        let (base, domain) = fixture(&env);
+        let mut changed = base.clone();
+        changed.uid = UID(BytesN::from_array(&env, &[8; 32]));
+        assert_ne!(base.uid, changed.uid);
+        assert_ne!(
+            hash_offchain_attestation(&env, &base, &domain),
+            hash_offchain_attestation(&env, &changed, &domain)
+        );
+    }
+
+    #[test]
+    fn schema_uid_changes_digest() {
+        let env = Env::default();
+        let (base, domain) = fixture(&env);
+        let mut changed = base.clone();
+        changed.schema_uid = UID(BytesN::from_array(&env, &[8; 32]));
+        assert_ne!(base.schema_uid, changed.schema_uid);
+        assert_ne!(
+            hash_offchain_attestation(&env, &base, &domain),
+            hash_offchain_attestation(&env, &changed, &domain)
+        );
+    }
+
+    #[test]
+    fn time_changes_digest() {
+        let env = Env::default();
+        let (base, domain) = fixture(&env);
+        let mut changed = base.clone();
+        changed.time = base.time + 1;
+        assert_ne!(base.time, changed.time);
+        assert_ne!(
+            hash_offchain_attestation(&env, &base, &domain),
+            hash_offchain_attestation(&env, &changed, &domain)
+        );
+    }
+
+    #[test]
+    fn expiration_time_changes_digest() {
+        let env = Env::default();
+        let (base, domain) = fixture(&env);
+        let mut changed = base.clone();
+        changed.expiration_time = base.expiration_time + 1;
+        assert_ne!(base.expiration_time, changed.expiration_time);
+        assert_ne!(
+            hash_offchain_attestation(&env, &base, &domain),
+            hash_offchain_attestation(&env, &changed, &domain)
+        );
+    }
+
+    #[test]
+    fn ref_uid_changes_digest() {
+        let env = Env::default();
+        let (base, domain) = fixture(&env);
+        let mut changed = base.clone();
+        changed.ref_uid = UID(BytesN::from_array(&env, &[8; 32]));
+        assert_ne!(base.ref_uid, changed.ref_uid);
+        assert_ne!(
+            hash_offchain_attestation(&env, &base, &domain),
+            hash_offchain_attestation(&env, &changed, &domain)
+        );
+    }
+
+    #[test]
+    fn recipient_changes_digest() {
+        let env = Env::default();
+        let (base, domain) = fixture(&env);
+        let mut changed = base.clone();
+        changed.recipient = address(&env, 8);
+        assert_ne!(base.recipient, changed.recipient);
+        assert_ne!(
+            hash_offchain_attestation(&env, &base, &domain),
+            hash_offchain_attestation(&env, &changed, &domain)
+        );
+    }
+
+    #[test]
+    fn attester_changes_digest() {
+        let env = Env::default();
+        let (base, domain) = fixture(&env);
+        let mut changed = base.clone();
+        changed.attester = address(&env, 8);
+        assert_ne!(base.attester, changed.attester);
+        assert_ne!(
+            hash_offchain_attestation(&env, &base, &domain),
+            hash_offchain_attestation(&env, &changed, &domain)
+        );
+    }
+
+    #[test]
+    fn revocable_changes_digest() {
+        let env = Env::default();
+        let (base, domain) = fixture(&env);
+        let mut changed = base.clone();
+        changed.revocable = !base.revocable;
+        assert_ne!(base.revocable, changed.revocable);
+        assert_ne!(
+            hash_offchain_attestation(&env, &base, &domain),
+            hash_offchain_attestation(&env, &changed, &domain)
+        );
+    }
+
+    #[test]
+    fn data_changes_digest() {
+        let env = Env::default();
+        let (base, domain) = fixture(&env);
+        let mut changed = base.clone();
+        changed.data = Bytes::from_slice(&env, b"fixed payloae");
+        assert_ne!(base.data, changed.data);
+        assert_ne!(
+            hash_offchain_attestation(&env, &base, &domain),
+            hash_offchain_attestation(&env, &changed, &domain)
+        );
+    }
+
+    #[test]
+    fn revocation_time_does_not_change_digest() {
+        let env = Env::default();
+        let (base, domain) = fixture(&env);
+        let mut changed = base.clone();
+        changed.revocation_time = 123;
+        assert_ne!(base.revocation_time, changed.revocation_time);
+        assert_eq!(
+            hash_offchain_attestation(&env, &base, &domain),
+            hash_offchain_attestation(&env, &changed, &domain)
+        );
+    }
+
+    #[test]
+    fn network_id_changes_digest() {
+        let env = Env::default();
+        let (base, domain) = fixture(&env);
+        let mut changed = domain.clone();
+        changed.network_id = BytesN::from_array(&env, &[8; 32]);
+        assert_ne!(domain.network_id, changed.network_id);
+        assert_ne!(
+            hash_offchain_attestation(&env, &base, &domain),
+            hash_offchain_attestation(&env, &base, &changed)
+        );
+    }
+
+    #[test]
+    fn contract_changes_digest() {
+        let env = Env::default();
+        let (base, domain) = fixture(&env);
+        let mut changed = domain.clone();
+        changed.contract = address(&env, 8);
+        assert_ne!(domain.contract, changed.contract);
+        assert_ne!(
+            hash_offchain_attestation(&env, &base, &domain),
+            hash_offchain_attestation(&env, &base, &changed)
+        );
+    }
+
+    #[test]
+    fn nonce_changes_digest() {
+        let env = Env::default();
+        let (base, domain) = fixture(&env);
+        let mut changed = domain.clone();
+        changed.nonce = domain.nonce + 1;
+        assert_ne!(domain.nonce, changed.nonce);
+        assert_ne!(
+            hash_offchain_attestation(&env, &base, &domain),
+            hash_offchain_attestation(&env, &base, &changed)
         );
     }
 }

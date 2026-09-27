@@ -84,6 +84,39 @@ fn test_validate_schema_syntax_rejects_malformed_strings() {
 }
 
 #[test]
+fn test_validate_schema_syntax_enforces_max_field_count() {
+    extern crate std;
+    let env = Env::default();
+
+    // Exactly MAX_SCHEMA_FIELDS fields is accepted.
+    let at_limit = (0..crate::validation::MAX_SCHEMA_FIELDS)
+        .map(|i| std::format!("f{i} B"))
+        .collect::<std::vec::Vec<_>>()
+        .join(",");
+    let schema = soroban_sdk::String::from_str(&env, &at_limit);
+    assert!(
+        validate_schema_syntax(&env, &schema).is_ok(),
+        "a schema with exactly MAX_SCHEMA_FIELDS fields must be accepted"
+    );
+
+    // MAX_SCHEMA_FIELDS + 1 fields is rejected, even though it still fits
+    // within MAX_SCHEMA_LENGTH bytes.
+    let over_limit = (0..=crate::validation::MAX_SCHEMA_FIELDS)
+        .map(|i| std::format!("f{i} B"))
+        .collect::<std::vec::Vec<_>>()
+        .join(",");
+    assert!(
+        over_limit.len() <= 1024,
+        "fixture must stay within MAX_SCHEMA_LENGTH to isolate the field-count check"
+    );
+    let schema = soroban_sdk::String::from_str(&env, &over_limit);
+    assert_eq!(
+        validate_schema_syntax(&env, &schema),
+        Err(crate::errors::SASError::InvalidSchema)
+    );
+}
+
+#[test]
 fn test_validate_recipient_rejects_zero_addresses() {
     let env = Env::default();
 
@@ -303,4 +336,26 @@ fn test_merkle_root_generation() {
     let merkle_root = MerkleRoot(root_bytes.clone());
 
     assert_eq!(merkle_root.0, root_bytes);
+}
+
+#[test]
+fn test_delegation_nonce_key_xdr_smaller_than_tuple() {
+    use soroban_sdk::xdr::ToXdr;
+    let env = Env::default();
+    let attester = Address::generate(&env);
+
+    let typed_key = crate::DelegationNonceKey {
+        attester: attester.clone(),
+    };
+    let tuple_key = (soroban_sdk::Symbol::new(&env, "DELEGATION_NONCE"), attester);
+
+    let typed_xdr = typed_key.to_xdr(&env);
+    let tuple_xdr = tuple_key.to_xdr(&env);
+
+    assert!(
+        typed_xdr.len() < tuple_xdr.len(),
+        "Typed DelegationNonceKey XDR ({} bytes) must be smaller than raw tuple XDR ({} bytes)",
+        typed_xdr.len(),
+        tuple_xdr.len()
+    );
 }

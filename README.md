@@ -28,6 +28,11 @@ For an in-depth look at how state is managed, the interactions between various s
 
 Details about our security perimeter, administrative capabilities, and known vulnerabilities can be found in the [Security Assumptions and Threat Model](docs/security.md) guide.
 
+SAS fee changes emit `FeeConfigUpdated` events with previous and new values;
+see [Contract Events](docs/events.md) for payloads and SDK parsing. Dependency
+security checks and indexer fuzzing commands are described in
+[Contributing](CONTRIBUTING.md).
+
 ## Project Status
 
 The workspace has evolved beyond initial mocks and now includes comprehensive domain logic for the smart contracts:
@@ -70,7 +75,8 @@ The workspace has evolved beyond initial mocks and now includes comprehensive do
 - `packages/soroban-sas-sdk`
   A streamlined Rust Software Development Kit designed to facilitate future integrations with wallets and decentralized applications.
   It includes builders such as `SchemaBuilder` and client helpers such as
-  `SASClient::multi_attest` for batch attestation submission.
+  `SASClient::multi_attest` for batch attestation submission and
+  `SASClient::fetch_admin` for deployment and governance verification.
 
 ### CLI and Operations
 
@@ -94,6 +100,8 @@ cargo run -p soroban-sas-cli -- --output json attest attest \
   --secret-key S... --network-passphrase "Test SDF Network ; September 2015" \
   --contract-id C... --rpc-url URL
 cargo run -p soroban-sas-cli -- --output json query by-recipient --address G... --contract-id C... --rpc-url URL
+cargo run -p soroban-sas-cli -- --output json query by-attester \
+  --address G... --contract-id C... --rpc-url URL
 ```
 
 Detailed usage and flags for every subcommand are available via:
@@ -101,6 +109,14 @@ Detailed usage and flags for every subcommand are available via:
 ```bash
 cargo run -p soroban-sas-cli -- --help
 ```
+
+## Delegated Issuance
+
+Delegated issuance and revocation let an attester sign an operation off-chain
+while a separate relayer submits and pays for the transaction. See
+[Delegated Issuance and Revocation](docs/delegation.md) for the typed-data
+domain, nonce high-watermark rules, key rotation behavior, CLI commands, and
+SDK workflow.
 
 ## Local Development Network
 
@@ -209,10 +225,16 @@ TMPDIR=/tmp cargo test --workspace
 ## Documentation
 
 - Documentation on Schema Syntax and Payloads: `docs/schemas.md`
+- [Attestation Lifecycle](docs/attestations.md): issuance, expiration,
+  revocation, and replacement semantics, including `replace_attestation`'s
+  expiration monotonicity rule.
+- [Batch Attestations (Merkle Commitments)](docs/batch-attestations.md):
+  when to use off-chain Merkle batching instead of on-chain `multi_attest`,
+  the normative leaf/node hashing rules, and a selective-disclosure example.
 - [Deployment Guide](docs/DEPLOYMENT.md): build optimized WASM, deploy
   `schema-registry`, `sas` and `indexer` to Testnet (via `scripts/deploy.sh` or
   `scripts/deploy_testnet.sh`), verify the deployment, and a Mainnet operational checklist.
-- [Upgrade Runbook](docs/UPGRADE_RUNBOOK.md): staged upgrade and recovery procedures for `schema-registry`.
+- [Upgrade Runbook](docs/UPGRADE_RUNBOOK.md): staged upgrade and forward-recovery procedures for `schema-registry`, `sas`, and `indexer`.
 ## Project Roadmap
 
 `soroban-sas` is under active development. Our roadmap to a production-ready release is structured as follows:

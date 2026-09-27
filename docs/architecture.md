@@ -36,7 +36,32 @@ attestation/schema data it governs:
   wherever it is written or read. An individual attestation or schema
   expiring does not take down the rest of the contract the way a lost
   admin binding would, so persistent entries are extended on their own
-  schedule rather than the stricter instance policy.
+  schedule rather than the stricter instance policy. The indexer's per-key
+  UID counters (`RCOUNT`/`SCOUNT`/`ACOUNT`) live here too, on the same
+  horizon as the chunks they count — they used to live in instance storage,
+  where their independent expiry from the chunk data they count could reset
+  a counter to zero while its chunks survived, corrupting the index with
+  duplicate UIDs on the next write (#219).
+
+## Contract Upgrades
+
+All three contracts are upgraded in place by an admin-authorized
+`upgrade(new_wasm_hash, new_version)`. Each contract stores a monotonic
+instance `VERSION` (a missing key on a legacy instance reads as genesis `1`),
+accepts only the exact next audited version, and requires the candidate to be
+non-zero and already uploaded. Validation reads the existing layout before any
+state is written; the version and the targeted hash (`WASMHASH`) are then
+committed, and each contract emits `ContractUpgraded` with
+`(old_wasm_hash, new_wasm_hash, authorizer)` immediately before the swap is
+requested. The schema registry additionally emits its own versioned
+`UPGRADE("UPGRADE", old_version, new_version)` event. Because Soroban rolls a
+failed invocation back, an upgrade event an off-chain consumer observes always
+corresponds to an activation that durably took effect.
+
+See [Contract Events](events.md) for the payloads and the
+[Contract Upgrade and Recovery Runbook](UPGRADE_RUNBOOK.md) for the staged
+activation and rollback procedure.
+
 ## Trust Boundaries
 
 ### Indexer writes
@@ -64,3 +89,19 @@ This mirrors how `SAS::init` and `Indexer::init` already gate on a
 compatibility probe (`sasreg`/`sasv1`) before trusting a configured
 dependency address — the indexer's SAS binding is a similar one-way trust
 relationship, just enforced per-call instead of once at initialization.
+
+### Indexer Reconciliation
+
+When running under default fail-open mode, any downstream indexing failures emit `IndexFailed(uid)` (`IDXFAIL`) events rather than rolling back core attestation writes. Operators recover missed entries using `SAS::reindex_attestation(uid)`.
+
+For operational instructions covering event detection, unreconciled UID enumeration, CLI/SDK invocation, health checks, and retry strategies, see the [Indexer Reconciliation Runbook](reconciliation.md) and [Indexer Availability Policy](indexer-availability-and-fees.md).
+
+
+## Attestation Lifecycle and State Machine
+
+An attestation within the Soroban SAS framework flows through several definitive states managed strictly by the core SAS smart contract:
+- **Issuance (`attest` / `multi_attest`)**: A new, revocable or non-revocable attestation is firmly anchored to the chain. A deterministic `UID` is assigned based strictly on `(schema_uid, recipient, attester, data, time, expiration_time, revocable)`.
+- **Active State**: While `timestamp < expiration_time` (and `expiration_time != 0`) and `revocation_time == 0`, the attestation is publicly active.
+- **Revoked State (`revoke`)**: If the attestation was initialized with `revocable = true`, the `attester` (or a delegated proxy) can flip the state by setting the `revocation_time` parameter on-chain. From this moment, `verify_attestation` returns `false`.
+- **Expired State**: Occurs naturally when the ledger timestamp overtakes `expiration_time`. No explicit transaction is needed to reach this state. Expired attestations strictly cannot be actively rotated or replaced in-place.
+- **Replacement (`replace_attestation`)**: Binds an active, non-revoked attestation into a revoked state natively, synchronously emitting a new child attestation mapped backwards through the `ref_uid` pointer structure.
