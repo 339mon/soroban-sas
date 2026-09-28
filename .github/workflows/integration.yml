@@ -43,7 +43,7 @@ jobs:
       - name: Install cargo-binstall
         uses: taiki-e/install-action@cargo-binstall
       - name: Install stellar-cli
-        run: cargo binstall -y stellar-cli@22.0.1 --bin stellar
+        run: cargo binstall -y stellar-cli --bin stellar
 
       - name: Start stellar-quickstart
         run: |

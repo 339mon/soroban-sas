@@ -87,7 +87,7 @@ jobs:
         uses: taiki-e/install-action@cargo-binstall
       - name: Install stellar-cli and wasm-opt
         run: |
-          cargo binstall -y stellar-cli@22.0.1 --bin stellar
+          cargo binstall -y stellar-cli --bin stellar
           cargo binstall -y wasm-opt
       - name: Start stellar-quickstart
         run: |
