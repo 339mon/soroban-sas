@@ -248,6 +248,60 @@ impl SASClient {
         invoke_read_only(env, rpc, &self.contract_id, "get_fee", vec![])
     }
 
+    /// Calls `SAS::set_fee(token, amount)` on this client's SAS contract.
+    /// The token must be a contract address and `amount` must be positive.
+    /// Requires `admin_secret_seed`'s account to be the SAS administrator.
+    pub fn set_fee(
+        &self,
+        env: &Env,
+        rpc: &RpcClient,
+        network_passphrase: &str,
+        admin_secret_seed: &[u8; 32],
+        token: &str,
+        amount: i128,
+    ) -> Result<GetTransactionResult, SdkError> {
+        if amount <= 0 {
+            return Err(SdkError::InvalidInput(
+                "fee amount must be greater than 0".to_string(),
+            ));
+        }
+        let token = parse_address(env, token, AddressKind::Contract, "token")?;
+        let args = vec![
+            simulate::encode_arg(env, &token)?,
+            simulate::encode_arg(env, &amount)?,
+        ];
+        self.submit_write(
+            env,
+            rpc,
+            network_passphrase,
+            admin_secret_seed,
+            &self.contract_id,
+            "set_fee",
+            args,
+        )
+    }
+
+    /// Calls `SAS::clear_fee()` on this client's SAS contract, removing the
+    /// payment requirement. Requires `admin_secret_seed`'s account to be the
+    /// SAS administrator.
+    pub fn clear_fee(
+        &self,
+        env: &Env,
+        rpc: &RpcClient,
+        network_passphrase: &str,
+        admin_secret_seed: &[u8; 32],
+    ) -> Result<GetTransactionResult, SdkError> {
+        self.submit_write(
+            env,
+            rpc,
+            network_passphrase,
+            admin_secret_seed,
+            &self.contract_id,
+            "clear_fee",
+            vec![],
+        )
+    }
+
     /// Reads the highest delegation nonce consumed for `attester` via `simulateTransaction`
     /// (a pure read) (#236).
     ///
@@ -1116,6 +1170,50 @@ impl SASClient {
         )
     }
 
+    /// Calls `SAS::multi_revoke(uids)`: encodes each UID into one Soroban
+    /// vector argument, signs the batch invoke with `secret_seed`, submits it,
+    /// and polls until it settles.
+    pub fn multi_revoke(
+        &self,
+        env: &Env,
+        rpc: &RpcClient,
+        network_passphrase: &str,
+        secret_seed: &[u8; 32],
+        uids: &[&[u8; 32]],
+    ) -> Result<GetTransactionResult, SdkError> {
+        self.submit_write(
+            env,
+            rpc,
+            network_passphrase,
+            secret_seed,
+            &self.contract_id,
+            "multi_revoke",
+            vec![encode_multi_revoke_arg(env, uids)?],
+        )
+    }
+
+    /// Like [`multi_revoke`](Self::multi_revoke) but allows a [`FeePolicy`].
+    pub fn multi_revoke_with_fee_policy(
+        &self,
+        env: &Env,
+        rpc: &RpcClient,
+        network_passphrase: &str,
+        secret_seed: &[u8; 32],
+        uids: &[&[u8; 32]],
+        fee_policy: &FeePolicy,
+    ) -> Result<GetTransactionResult, SdkError> {
+        invoke_write_with_fee_policy(
+            env,
+            rpc,
+            network_passphrase,
+            secret_seed,
+            &self.contract_id,
+            "multi_revoke",
+            vec![encode_multi_revoke_arg(env, uids)?],
+            fee_policy,
+        )
+    }
+
     /// Calls `SAS::attest_by_delegation(attestation, nonce, signature,
     /// public_key)`: submits an already off-chain-signed attestation.
     ///
@@ -1334,6 +1432,20 @@ fn encode_multi_attest_arg(env: &Env, attestations: &[Attestation]) -> Result<Sc
     Ok(ScVal::Vec(Some(encoded.into())))
 }
 
+fn encode_multi_revoke_arg(env: &Env, uids: &[&[u8; 32]]) -> Result<ScVal, SdkError> {
+    let encoded: Vec<ScVal> = uids
+        .iter()
+        .map(|raw_uid| {
+            let uid = UID(BytesN::from_array(env, raw_uid));
+            simulate::encode_arg(env, &uid)
+        })
+        .collect::<Result<_, _>>()?;
+    let encoded: VecM<ScVal> = encoded
+        .try_into()
+        .map_err(|e| SdkError::RpcError(format!("too many uids: {e:?}")))?;
+    Ok(ScVal::Vec(Some(encoded.into())))
+}
+
 /// Client for the Indexer contract's read-only attestation lookups.
 pub struct IndexerClient {
     /// The Indexer contract's Soroban contract ID.
@@ -1499,6 +1611,68 @@ impl IndexerClient {
         let uid = UID(BytesN::from_array(env, old_uid));
         let arg = simulate::encode_arg(env, &uid)?;
         invoke_read_only(env, rpc, &self.contract_id, "get_replacement", vec![arg])
+    }
+
+    /// Calls `Indexer::get_count_by_recipient(address)` via
+    /// `simulateTransaction`. Returns `0` for a key that has never been
+    /// indexed. Lets callers compute pagination totals
+    /// (`ceil(count / page_size)`) without fetching every UID under
+    /// `recipient` just to learn how many there are (#220).
+    pub fn get_count_by_recipient(
+        &self,
+        env: &Env,
+        rpc: &RpcClient,
+        recipient: &str,
+    ) -> Result<u32, SdkError> {
+        let recipient = parse_address(env, recipient, AddressKind::Either, "recipient")?;
+        let arg = simulate::encode_arg(env, &recipient)?;
+        invoke_read_only(
+            env,
+            rpc,
+            &self.contract_id,
+            "get_count_by_recipient",
+            vec![arg],
+        )
+    }
+
+    /// Calls `Indexer::get_count_by_schema(schema_uid)` via
+    /// `simulateTransaction`. See [`IndexerClient::get_count_by_recipient`]
+    /// for semantics.
+    pub fn get_count_by_schema(
+        &self,
+        env: &Env,
+        rpc: &RpcClient,
+        schema_uid: &[u8; 32],
+    ) -> Result<u32, SdkError> {
+        let schema_uid = UID(BytesN::from_array(env, schema_uid));
+        let arg = simulate::encode_arg(env, &schema_uid)?;
+        invoke_read_only(
+            env,
+            rpc,
+            &self.contract_id,
+            "get_count_by_schema",
+            vec![arg],
+        )
+    }
+
+    /// Calls `Indexer::get_count_by_attester(address)` via
+    /// `simulateTransaction`. See [`IndexerClient::get_count_by_recipient`]
+    /// for semantics.
+    pub fn get_count_by_attester(
+        &self,
+        env: &Env,
+        rpc: &RpcClient,
+        attester: &str,
+    ) -> Result<u32, SdkError> {
+        let attester = parse_address(env, attester, AddressKind::Either, "attester")?;
+        let arg = simulate::encode_arg(env, &attester)?;
+        invoke_read_only(
+            env,
+            rpc,
+            &self.contract_id,
+            "get_count_by_attester",
+            vec![arg],
+        )
     }
 }
 
@@ -2000,6 +2174,21 @@ mod tests {
         assert_eq!(values.len(), 2);
     }
 
+    #[test]
+    fn multi_revoke_encodes_uids_as_one_vector_arg() {
+        let env = Env::default();
+        let uid1 = [1u8; 32];
+        let uid2 = [2u8; 32];
+        let uids = vec![&uid1, &uid2];
+
+        let arg = encode_multi_revoke_arg(&env, &uids).unwrap();
+
+        let ScVal::Vec(Some(values)) = arg else {
+            panic!("expected multi_revoke argument to be an ScVal vector");
+        };
+        assert_eq!(values.len(), 2);
+    }
+
     /// Live fixture: contract view `get_attestation` returns
     /// `Some(Attestation)` and the SDK's TTL-renewing path surfaces it as `Live`.
     #[test]
@@ -2368,6 +2557,14 @@ mod tests {
                 Err(SdkError::DecodingError(_)) => {}
                 other => panic!("get_attestations_by_attester({bad:?}) = {other:?}"),
             }
+            match client.get_count_by_recipient(&env, &rpc, bad) {
+                Err(SdkError::DecodingError(_)) => {}
+                other => panic!("get_count_by_recipient({bad:?}) = {other:?}"),
+            }
+            match client.get_count_by_attester(&env, &rpc, bad) {
+                Err(SdkError::DecodingError(_)) => {}
+                other => panic!("get_count_by_attester({bad:?}) = {other:?}"),
+            }
         }
     }
 
@@ -2463,6 +2660,7 @@ mod tests {
             schema: SorobanString::from_str(&env, "score U32"),
             resolver: resolver.clone(),
             revocable: true,
+            deprecated: false,
         };
 
         // Existing schema returns Some(SchemaRecord)

@@ -22,6 +22,16 @@ schema string above. The validator rejects whitespace-only values, entries
 without at least one `name Type` pair, and strings that do not resemble a
 field declaration.
 
+Two ceilings bound the size of a schema string:
+- **Byte length**: at most 1024 bytes (`MAX_SCHEMA_LENGTH`).
+- **Field count**: at most 64 comma-separated fields (`MAX_SCHEMA_FIELDS`).
+  A byte-length limit alone doesn't bound field count — a string packed with
+  many tiny fields (e.g. `a B,b B,c B,...`, 4 bytes each) can still fit up to
+  256 fields inside 1024 bytes. Unbounded field counts cost resolvers and
+  off-chain SDK parsers O(n_fields) work on every decode of every
+  attestation issued under the schema, so this ceiling protects that budget.
+  Real identity, KYC, and governance schemas rarely exceed 20 fields.
+
 ## Verification
 When verifying an attestation off-chain or on-chain, the client decodes the raw `data` field using the associated schema definition. The schema enforces that every issued attestation strictly conforms to the expected layout.
 
@@ -50,6 +60,21 @@ and cross-contract invocation costs within Soroban's measured budget envelope.
 
 Changes to `MAX_ATTESTATION_DATA_BYTES` are a protocol-level breaking change and
 require a versioned upgrade.
+
+## Deprecation Authorization
+
+`SchemaRegistry::deprecate(uid: UID, authorizer: Address)` marks a schema as deprecated. Once deprecated:
+- `get_schema` and `validate_schema` return `None` / `false` for the schema.
+- `is_authorized` rejects every attester, so no further attestations can be issued under it.
+- Existing attestations already issued under the schema are unaffected in storage, but `verify_offchain_attestation` and issuance checks that re-validate the schema will treat it as gone.
+
+Because deprecation is irreversible (there is no `undeprecate`) and immediately invalidates issuance for every holder of the schema, only two parties may call it:
+- **The schema's creator** (the address recorded at `register`/`register_with_value`, or the current owner after `transfer_schema_ownership`).
+- **The registry admin** (set at `SchemaRegistry::init`), to support governance-level moderation of schemas it did not create.
+
+`authorizer` must `require_auth()` and must be one of the two above, or the call panics with `SASError::Unauthorized` before any state is written. Calling `deprecate` on an unknown UID panics with `SASError::SchemaNotFound` and writes no tombstone. Repeated calls against an already-deprecated schema are idempotent no-ops (no panic, no duplicate event).
+
+A successful (state-changing) call emits `SchemaDeprecated` — see `docs/events.md`.
 
 ## Resolver Callbacks
 Schemas can optionally specify a `resolver` contract address. If specified, the SAS contract will invoke callbacks on the resolver to enforce schema-specific rules or synchronize dependent state.
@@ -100,3 +125,7 @@ To support DAOs, enterprise organizations, and multi-issuer systems without shar
 ### Revocation
 - Authorized delegates can revoke their own attestations via `revoke(uid)`.
 - Authorized delegates and schema owners can revoke any attestation under the schema using `revoke_by_delegate(uid, delegate)` / `revoke_by_authorizer(uid, authorizer)`.
+
+## Schema ID Collision Resistance
+
+Schema UID derivation hashes the schema string, resolver address, and revocability boolean flag together using SHA-256. This deterministic formulation guarantees robust ID collision resistance: two independent entities creating the exact same schema structure will not collide if they specify different resolvers or different revocability toggles. Furthermore, strict capitalization boundaries and whitespace trimmings during schema string validation prevent bad actors from intentionally creating semantically identical duplicates disguised by format drift. 

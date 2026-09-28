@@ -1,6 +1,9 @@
 use super::*;
-use soroban_sas_common::{INSTANCE_EXTEND_TO_LEDGERS, UID};
-use soroban_sdk::{contract, contractimpl, testutils::Address as _, Env, IntoVal};
+use soroban_sas_common::{ContractUpgradedEvent, SASError, INSTANCE_EXTEND_TO_LEDGERS, UID};
+use soroban_sdk::{
+    contract, contractimpl, symbol_short, testutils::Address as _, testutils::Events as _, BytesN,
+    Env, IntoVal,
+};
 
 mod mock {
     use super::*;
@@ -24,6 +27,9 @@ mod mock {
             schema_uid: UID,
             attester: Address,
         ) {
+            env.storage()
+                .instance()
+                .extend_ttl(INSTANCE_EXTEND_TO_LEDGERS, INSTANCE_EXTEND_TO_LEDGERS);
             env.invoke_contract::<()>(
                 &indexer,
                 &Symbol::new(&env, "index_attestation"),
@@ -81,6 +87,11 @@ fn setup_indexed(env: &Env) -> (Address, IndexerClient<'_>, Address) {
     let client = IndexerClient::new(env, &indexer_id);
     let admin = Address::generate(env);
     let sas = env.register_contract(None, mock::MockSas);
+    env.as_contract(&sas, || {
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_EXTEND_TO_LEDGERS, INSTANCE_EXTEND_TO_LEDGERS);
+    });
     env.mock_all_auths();
     client.init(&admin, &sas);
     (indexer_id, client, sas)
@@ -119,6 +130,185 @@ fn test_init_twice_is_rejected() {
         res,
         Err(Ok(soroban_sas_common::SASError::AlreadyInitialized.into()))
     );
+}
+
+fn setup_upgrade_indexer(env: &Env) -> (Address, Address, Address) {
+    let indexer = env.register_contract(None, Indexer);
+    let admin = Address::generate(env);
+    let sas = env.register_contract(None, mock::MockSas);
+    env.mock_all_auths();
+    IndexerClient::new(env, &indexer).init(&admin, &sas);
+    (indexer, admin, sas)
+}
+
+#[test]
+fn test_upgrade_version_genesis_and_legacy_default() {
+    let env = Env::default();
+    let (indexer, _admin, _sas) = setup_upgrade_indexer(&env);
+    let client = IndexerClient::new(&env, &indexer);
+    assert_eq!(client.get_version(), 1);
+
+    env.as_contract(&indexer, || {
+        env.storage().instance().remove(&INDEXER_VERSION);
+    });
+    assert_eq!(client.get_version(), 1);
+}
+
+#[test]
+fn test_init_does_not_overwrite_existing_upgrade_version() {
+    let env = Env::default();
+    let indexer = env.register_contract(None, Indexer);
+    env.as_contract(&indexer, || {
+        env.storage().instance().set(&INDEXER_VERSION, &2u32);
+    });
+    let admin = Address::generate(&env);
+    let sas = env.register_contract(None, mock::MockSas);
+    env.mock_all_auths();
+    let client = IndexerClient::new(&env, &indexer);
+    client.init(&admin, &sas);
+    assert_eq!(client.get_version(), 2);
+}
+
+#[test]
+fn test_upgrade_preparation_moves_one_to_two_emits_event_and_preserves_bindings() {
+    let env = Env::default();
+    let (indexer, admin, sas) = setup_upgrade_indexer(&env);
+    let client = IndexerClient::new(&env, &indexer);
+    let new_hash = BytesN::from_array(&env, &[7u8; 32]);
+
+    env.as_contract(&indexer, || {
+        let validated_admin = validate_upgrade(&env, &new_hash, 2).unwrap();
+        commit_upgrade(&env, &validated_admin, &new_hash, 2);
+    });
+
+    assert_eq!(client.get_version(), 2);
+    assert_eq!(client.get_admin(), Some(admin.clone()));
+    assert_eq!(client.get_sas(), Some(sas));
+    let expected = ContractUpgradedEvent {
+        old_wasm_hash: BytesN::from_array(&env, &[0u8; 32]),
+        new_wasm_hash: new_hash,
+        authorizer: admin.clone(),
+    };
+    let all = env.events().all();
+    assert_eq!(
+        all.slice(all.len() - 1..),
+        soroban_sdk::vec![
+            &env,
+            (
+                indexer,
+                (symbol_short!("UPGRADED"), admin).into_val(&env),
+                expected.into_val(&env),
+            )
+        ]
+    );
+}
+
+#[test]
+fn test_upgrade_validation_rejects_skip_current_zero_and_unknown_version_without_mutation() {
+    let env = Env::default();
+    let (indexer, _admin, _sas) = setup_upgrade_indexer(&env);
+    let client = IndexerClient::new(&env, &indexer);
+    let hash = BytesN::from_array(&env, &[8u8; 32]);
+    let zero = BytesN::from_array(&env, &[0u8; 32]);
+    let events_before = env.events().all().len();
+
+    let (current, downgrade, zero_result, unknown, skipped) = env.as_contract(&indexer, || {
+        let current = validate_upgrade(&env, &hash, 1);
+        let zero_result = validate_upgrade(&env, &zero, 2);
+        let unknown = validate_upgrade(&env, &hash, MAX_KNOWN_VERSION + 1);
+        env.storage().instance().set(&INDEXER_VERSION, &2u32);
+        let downgrade = validate_upgrade(&env, &hash, 1);
+        // With MAX_KNOWN_VERSION=2, create a lower stored version so a skip
+        // can be tested independently from the unknown-version guard.
+        env.storage().instance().set(&INDEXER_VERSION, &0u32);
+        let skipped = validate_upgrade(&env, &hash, 2);
+        env.storage().instance().set(&INDEXER_VERSION, &1u32);
+        (current, downgrade, zero_result, unknown, skipped)
+    });
+
+    assert_eq!(current, Err(SASError::InvalidValue));
+    assert_eq!(downgrade, Err(SASError::InvalidValue));
+    assert_eq!(zero_result, Err(SASError::InvalidValue));
+    assert_eq!(unknown, Err(SASError::IncompatibleDependency));
+    assert_eq!(skipped, Err(SASError::InvalidValue));
+    assert_eq!(client.get_version(), 1);
+    assert_eq!(env.events().all().len(), events_before);
+}
+
+#[test]
+fn test_upgrade_requires_admin_auth_and_emits_no_success_event() {
+    let env = Env::default();
+    let (indexer, _admin, _sas) = setup_upgrade_indexer(&env);
+    let client = IndexerClient::new(&env, &indexer);
+    env.set_auths(&[]);
+    let events_before = env.events().all().len();
+
+    let result = client.try_upgrade(&BytesN::from_array(&env, &[9u8; 32]), &2);
+    assert!(result.is_err());
+    assert_eq!(client.get_version(), 1);
+    assert_eq!(env.events().all().len(), events_before);
+}
+
+#[test]
+fn test_upgrade_rejects_missing_layout_without_mutation_or_event() {
+    let env = Env::default();
+    let (indexer, _admin, _sas) = setup_upgrade_indexer(&env);
+    let client = IndexerClient::new(&env, &indexer);
+    env.as_contract(&indexer, || {
+        env.storage().instance().remove(&SAS_CONTRACT);
+    });
+    let events_before = env.events().all().len();
+    let result = client.try_upgrade(&BytesN::from_array(&env, &[10u8; 32]), &2);
+
+    assert_eq!(result, Err(Ok(SASError::IncompatibleDependency.into())));
+    assert_eq!(client.get_version(), 1);
+    assert_eq!(env.events().all().len(), events_before);
+}
+
+#[test]
+fn test_upgrade_event_uses_a_previously_tracked_hash() {
+    let env = Env::default();
+    let (indexer, admin, _sas) = setup_upgrade_indexer(&env);
+    let old_hash = BytesN::from_array(&env, &[12u8; 32]);
+    let new_hash = BytesN::from_array(&env, &[13u8; 32]);
+
+    env.as_contract(&indexer, || {
+        env.storage().instance().set(&CURRENT_WASM_HASH, &old_hash);
+        commit_upgrade(&env, &admin, &new_hash, 2);
+    });
+
+    let expected = ContractUpgradedEvent {
+        old_wasm_hash: old_hash,
+        new_wasm_hash: new_hash,
+        authorizer: admin.clone(),
+    };
+    let all = env.events().all();
+    assert_eq!(
+        all.slice(all.len() - 1..),
+        soroban_sdk::vec![
+            &env,
+            (
+                indexer,
+                (symbol_short!("UPGRADED"), admin).into_val(&env),
+                expected.into_val(&env),
+            )
+        ]
+    );
+}
+
+#[test]
+fn test_failed_wasm_swap_rolls_back_version_and_tracked_hash() {
+    let env = Env::default();
+    let (indexer, _admin, _sas) = setup_upgrade_indexer(&env);
+    let client = IndexerClient::new(&env, &indexer);
+    let missing_hash = BytesN::from_array(&env, &[11u8; 32]);
+
+    assert!(client.try_upgrade(&missing_hash, &2).is_err());
+    assert_eq!(client.get_version(), 1);
+    let tracked: Option<BytesN<32>> = env.as_contract(&indexer, || {
+        env.storage().instance().get(&CURRENT_WASM_HASH)
+    });
+    assert_eq!(tracked, None);
 }
 
 #[test]
@@ -229,6 +419,69 @@ fn test_reindexing_identical_metadata_is_a_no_op() {
     assert_eq!(client.get_attestations_by_recipient(&recipient).len(), 1);
     assert_eq!(client.get_attestations_by_schema(&schema_uid).len(), 1);
     assert_eq!(client.get_attestations_by_attester(&attester).len(), 1);
+}
+
+/// Issue #220: `get_count_by_*` reads the same authoritative counter
+/// `index_total` derives chunk cursors from, without fetching any UIDs.
+#[test]
+fn test_get_count_by_defaults_to_zero_for_unindexed_key() {
+    let env = Env::default();
+    let (_indexer_id, client, _sas) = setup_indexed(&env);
+
+    let recipient = Address::generate(&env);
+    let schema_uid = UID(soroban_sdk::BytesN::from_array(&env, &[9u8; 32]));
+    let attester = Address::generate(&env);
+
+    assert_eq!(client.get_count_by_recipient(&recipient), 0);
+    assert_eq!(client.get_count_by_schema(&schema_uid), 0);
+    assert_eq!(client.get_count_by_attester(&attester), 0);
+}
+
+#[test]
+fn test_get_count_by_tracks_indexing_across_chunk_boundary() {
+    let env = Env::default();
+    let (indexer_id, client, sas) = setup_indexed(&env);
+    let sas_client = mock::MockSasClient::new(&env, &sas);
+    env.budget().reset_unlimited();
+
+    let recipient = Address::generate(&env);
+    let schema_uid = UID(soroban_sdk::BytesN::from_array(&env, &[9u8; 32]));
+    let attester = Address::generate(&env);
+
+    let total = MAX_CHUNK_SIZE + 1;
+    for i in 0..total {
+        let mut bytes = [0u8; 32];
+        bytes[0..4].copy_from_slice(&i.to_be_bytes());
+        let uid = UID(soroban_sdk::BytesN::from_array(&env, &bytes));
+        sas_client.relay_index(&indexer_id, &uid, &recipient, &schema_uid, &attester);
+
+        assert_eq!(client.get_count_by_recipient(&recipient), i + 1);
+        assert_eq!(client.get_count_by_schema(&schema_uid), i + 1);
+        assert_eq!(client.get_count_by_attester(&attester), i + 1);
+    }
+
+    // Counts agree with the full-history read length, across the
+    // MAX_CHUNK_SIZE rollover.
+    assert_eq!(
+        client.get_count_by_recipient(&recipient),
+        client.get_attestations_by_recipient(&recipient).len()
+    );
+    assert_eq!(
+        client.get_count_by_schema(&schema_uid),
+        client.get_attestations_by_schema(&schema_uid).len()
+    );
+    assert_eq!(
+        client.get_count_by_attester(&attester),
+        client.get_attestations_by_attester(&attester).len()
+    );
+
+    // Status transitions (Active -> Revoked/Replaced) don't decrement the
+    // count: the UID remains indexed, only its filtered visibility changes.
+    let uid0 = UID(soroban_sdk::BytesN::from_array(&env, &[0u8; 32]));
+    env.as_contract(&indexer_id, || {
+        set_index_status(&env, &uid0, IndexStatus::Revoked);
+    });
+    assert_eq!(client.get_count_by_recipient(&recipient), total);
 }
 
 #[test]
@@ -365,6 +618,12 @@ fn test_cursor_pagination_large_datasets() {
     let schema_uid = UID(soroban_sdk::BytesN::from_array(&env, &[6u8; 32]));
     let recipient = Address::generate(&env);
     let attester = Address::generate(&env);
+
+    // Each `index_attestation` is its own transaction on-chain, with its own
+    // budget; the test host accumulates all 101 into one. Reset so this
+    // fixture (now writing the per-key counter to persistent storage, #219)
+    // cannot exhaust the budget the assertions below need.
+    env.budget().reset_unlimited();
 
     for i in 0..101u8 {
         let mut bytes = [0u8; 32];
@@ -646,6 +905,74 @@ fn test_all_dimensions_chunk_at_max_and_complete_reads_walk_every_chunk() {
             .len(),
         1
     );
+}
+
+/// Issue #219: per-key UID counters (`RCOUNT`/`SCOUNT`/`ACOUNT`) live in
+/// persistent storage, not instance storage, so they cannot silently reset
+/// to zero if instance storage's independent expiry lapses. Simulates a
+/// total instance storage wipe (the worst case of "instance expired") by
+/// directly removing every instance key the contract uses, then proves the
+/// counter is still readable, correct, and — critically — that indexing a
+/// further UID for the same key appends rather than duplicating chunk 0.
+#[test]
+fn test_recipient_counter_survives_simulated_instance_storage_expiry() {
+    let env = Env::default();
+    let (indexer_id, client, sas) = setup_indexed(&env);
+    let sas_client = mock::MockSasClient::new(&env, &sas);
+
+    let schema_uid = UID(soroban_sdk::BytesN::from_array(&env, &[7u8; 32]));
+    let recipient = Address::generate(&env);
+    let attester = Address::generate(&env);
+
+    let uid1 = UID(soroban_sdk::BytesN::from_array(&env, &[1u8; 32]));
+    sas_client.relay_index(&indexer_id, &uid1, &recipient, &schema_uid, &attester);
+
+    let count_key = (RECIPIENT_TOTAL, recipient.clone());
+    env.as_contract(&indexer_id, || {
+        assert_eq!(
+            env.storage().persistent().get::<_, u32>(&count_key),
+            Some(1)
+        );
+        // Simulate instance storage having expired entirely: this is exactly
+        // where the counter used to live (#219). Wiping it must not touch
+        // the persistent counter or the chunk it counts.
+        env.storage().instance().remove(&INDEXER_ADMIN);
+        env.storage().instance().remove(&SAS_CONTRACT);
+        env.storage().instance().remove(&INDEXER_VERSION);
+    });
+
+    env.as_contract(&indexer_id, || {
+        assert_eq!(
+            env.storage().persistent().get::<_, u32>(&count_key),
+            Some(1),
+            "counter must survive an instance storage wipe"
+        );
+    });
+    assert_eq!(client.get_attestations_by_recipient(&recipient).len(), 1);
+
+    // `index_attestation` only needs `SAS_CONTRACT` to authorize the caller,
+    // so restore just that (as `init` originally set it) and index a second
+    // UID for the same recipient. With the old instance-backed counter this
+    // would have read back 0, recomputed chunk_index 0, and appended into
+    // the still-full-of-one chunk 0 as an overwrite/duplicate rather than a
+    // clean append at index 1.
+    env.as_contract(&indexer_id, || {
+        env.storage().instance().set(&SAS_CONTRACT, &sas);
+    });
+
+    let uid2 = UID(soroban_sdk::BytesN::from_array(&env, &[2u8; 32]));
+    sas_client.relay_index(&indexer_id, &uid2, &recipient, &schema_uid, &attester);
+
+    env.as_contract(&indexer_id, || {
+        assert_eq!(
+            env.storage().persistent().get::<_, u32>(&count_key),
+            Some(2)
+        );
+    });
+    let all = client.get_attestations_by_recipient(&recipient);
+    assert_eq!(all.len(), 2);
+    assert_eq!(all.get(0), Some(uid1));
+    assert_eq!(all.get(1), Some(uid2));
 }
 
 /// Issue #79: reading a recipient index renews the TTL of the chunks it

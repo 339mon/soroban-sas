@@ -41,6 +41,12 @@ pub const SCHEMA_OWNERSHIP_TRANSFERRED: Symbol = symbol_short!("SCHOWN");
 pub const BATCH_ATTESTED: Symbol = symbol_short!("BATCHATT");
 /// First topic of every `BatchRevoked` event.
 pub const BATCH_REVOKED: Symbol = symbol_short!("BATCHREV");
+/// First topic of every `SchemaDeprecated` event.
+pub const SCHEMA_DEPRECATED: Symbol = symbol_short!("SCHDEP");
+/// First topic of every `ContractPaused` event.
+pub const CONTRACT_PAUSED: Symbol = symbol_short!("PAUSED");
+/// First topic of every `ContractUnpaused` event.
+pub const CONTRACT_UNPAUSED: Symbol = symbol_short!("UNPAUSED");
 
 /// Payload of the `SchemaRegistered` event.
 ///
@@ -196,10 +202,10 @@ pub struct TreasuryUpdatedEvent {
 /// Payload of the `ContractUpgraded` event.
 ///
 /// Published with topics `(CONTRACT_UPGRADED, authorizer)` on a successful
-/// `SchemaRegistry::upgrade`, immediately before the WASM swap takes
-/// effect. `old_wasm_hash` is the hash of the code being replaced, read
-/// directly from the ledger's current contract executable so it cannot be
-/// spoofed by the caller.
+/// contract upgrade immediately before the WASM swap is requested. Soroban
+/// does not let a running contract read its installed WASM hash. Producers
+/// therefore document how the first upgrade represents an unavailable legacy
+/// hash and track successful target hashes for subsequent events.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ContractUpgradedEvent {
@@ -287,6 +293,19 @@ pub struct BatchAttestedEvent {
     pub attester_count: u32,
 }
 
+/// Payload of the `SchemaDeprecated` event.
+///
+/// Published with topics `(SCHEMA_DEPRECATED, schema_uid)` when
+/// `SchemaRegistry::deprecate` transitions a schema from active to
+/// deprecated. Not republished on an idempotent repeat call, so consumers
+/// can treat this event as the single, authoritative deprecation moment.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SchemaDeprecatedEvent {
+    pub schema_uid: UID,
+    pub deprecated_by: Address,
+}
+
 /// Payload of the `BatchRevoked` event.
 ///
 /// Published with topics `(BATCH_REVOKED,)` as the **last** event of a
@@ -299,6 +318,26 @@ pub struct BatchAttestedEvent {
 pub struct BatchRevokedEvent {
     pub count: u32,
     pub attester_count: u32,
+}
+
+/// Payload of the `ContractPaused` event.
+///
+/// Published with topics `(CONTRACT_PAUSED, authorizer)` when
+/// a contract is paused.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ContractPausedEvent {
+    pub authorizer: Address,
+}
+
+/// Payload of the `ContractUnpaused` event.
+///
+/// Published with topics `(CONTRACT_UNPAUSED, authorizer)` when
+/// a contract is unpaused.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ContractUnpausedEvent {
+    pub authorizer: Address,
 }
 
 /// First topic of a SAS `FeeConfigUpdated` event.
@@ -317,3 +356,5 @@ pub struct FeeConfigUpdatedEvent {
     pub new_amount: Option<i128>,
     pub authorizer: Address,
 }
+
+pub const REINDEXED: Symbol = symbol_short!("REINDEXED");

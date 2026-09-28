@@ -15,7 +15,7 @@
 # small, but cargo-mutants builds and runs it once per mutant, so a generous
 # timeout avoids false "timeout" outcomes on slower CI runners without
 # letting a genuinely hung build run forever.
-timeout = 120
+minimum_test_timeout = 120
 
 # Exclude test-only and generated code from mutation — mutating test helpers
 # or fuzz/bench harnesses does not exercise product code paths and only adds
