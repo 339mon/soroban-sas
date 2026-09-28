@@ -105,9 +105,9 @@ cargo +nightly-2024-06-13 fuzz build indexer_chunking_fuzz
 cargo +nightly-2024-06-13 fuzz run indexer_chunking_fuzz -- -runs=1000 -max_len=14400
 ```
 
-Fuzz compilation uses a pinned nightly verified against the workspace's
-Soroban SDK 22 dependency graph. Keep this pin aligned with the fuzz lockfile
-when upgrading Soroban dependencies; the cargo-fuzz executable itself is
+Fuzz compilation uses a pinned nightly compatible with Soroban 20's exact
+`ethnum = 1.5.0` dependency (the latest nightly changes the layout of a standard
+library error type assumed by that crate). The cargo-fuzz executable itself is
 installed with current stable Rust.
 
 Inputs contain 36-byte records: a four-byte key and a 32-byte UID seed. The

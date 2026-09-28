@@ -18,8 +18,8 @@ pub fn check_chunking(pairs: &[([u8; 4], [u8; 32])]) {
     let env = Env::new_with_config(soroban_sdk::testutils::EnvTestConfig {
         capture_snapshot_at_drop: false,
     });
-    env.cost_estimate().budget().reset_unlimited();
-    let id = env.register(Indexer, ());
+    env.budget().reset_unlimited();
+    let id = env.register_contract(None, Indexer);
     let mut expected: BTreeMap<[u8; 4], Vec<UID>> = BTreeMap::new();
     // Also exercise reads with no insertions.
     expected.insert([0; 4], Vec::new());

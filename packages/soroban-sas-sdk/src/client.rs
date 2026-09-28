@@ -1856,6 +1856,7 @@ fn build_signed_write_at_sequence(
         contract_id,
         function_name,
         args.to_vec(),
+        soroban_sdk::xdr::VecM::default(),
     )?;
     let draft_xdr = simulate::unsigned_envelope_xdr(draft_tx)?;
     let sim = rpc.simulate_transaction(&draft_xdr)?;
@@ -1888,6 +1889,22 @@ fn build_signed_write_at_sequence(
         .map_err(|e| SdkError::RpcError(format!("invalid minResourceFee: {e:?}")))?;
     let fee = apply_fee_policy(BASE_FEE, resource_fee, fee_policy)?;
 
+    let mut auth_vec = Vec::new();
+    if let Some(res) = sim.results.first() {
+        for a in &res.auth {
+            use soroban_sdk::xdr::ReadXdr;
+            let auth_entry = soroban_sdk::xdr::SorobanAuthorizationEntry::from_xdr_base64(
+                a,
+                crate::limits::default_rpc_response_limits(),
+            )
+            .map_err(|e| SdkError::DecodingError(format!("failed to decode auth: {:?}", e)))?;
+            auth_vec.push(auth_entry);
+        }
+    }
+    let auth = auth_vec
+        .try_into()
+        .map_err(|e| SdkError::DecodingError(format!("too many auth entries: {:?}", e)))?;
+
     // 2. Build the real transaction with that resource data and fee, validate
     //    it matches the original invocation, and sign it.
     let final_tx = simulate::build_invoke_transaction(
@@ -1898,6 +1915,7 @@ fn build_signed_write_at_sequence(
         contract_id,
         function_name,
         args.to_vec(),
+        auth,
     )?;
 
     simulate::validate_simulated_transaction(&final_tx, contract_id, function_name, args)?;

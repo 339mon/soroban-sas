@@ -37,7 +37,7 @@ live node and a funded account, so they are opt-in and explicit.
 docker compose up -d stellar-quickstart
 ```
 
-This runs the repository's pinned `stellar/quickstart:testing` image with `--standalone --enable-soroban-rpc --protocol-version 22`, matching the Soroban SDK/CLI v22 toolchain.
+This runs `stellar/quickstart:testing --standalone --enable-soroban-rpc`
 (see `docker-compose.yml`), exposing Soroban RPC at
 `http://localhost:8000/soroban/rpc` with network passphrase
 `Standalone Network ; February 2017`. Wait for it to report healthy:

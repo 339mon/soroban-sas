@@ -70,10 +70,9 @@ the SAS contract invokes `on_attest` before writing a new attestation, and
   cross-contract call gives it **no read or write access to the SAS
   contract's own storage**. It can only see the arguments passed to
   `on_attest`/`on_revoke` (the attestation, in `Val` form).
-- A resolver's only two levers are (a) **reject** — return a contract error,
-  trap, or fail to implement the callback, all of which abort the
-  attest/revoke call — or (b) return successfully, letting the operation
-  proceed. It cannot modify the
+- A resolver's only two levers are (a) **reject** — return `false`, revert,
+  or fail to implement the callback, all of which abort the attest/revoke
+  call — or (b) accept, letting the operation proceed. It cannot modify the
   attestation's contents, redirect it to a different recipient, or force an
   attestation to be issued that the caller didn't request.
 - Because `attest_internal` bounds `attestation.data` to
@@ -84,39 +83,6 @@ the SAS contract invokes `on_attest` before writing a new attestation, and
 - A malicious or buggy resolver is a schema-level risk, not a protocol-level
   one: it can only affect attestations issued under schemas that explicitly
   named it.
-
-
-## Cross-Contract Call Audit
-
-The SAS contract treats every external call as a trust boundary. The table
-below records the reviewed success condition and failure policy so future
-call sites do not silently inherit inconsistent behavior.
-
-| Boundary | Purpose | Accepted result | Failure policy |
-|---|---|---|---|
-| Registry compatibility probe | Bind a registry during SAS initialization | Either supported compatibility probe returns `true` | Abort initialization with `IncompatibleDependency` |
-| Registry `get_schema` | Load schema policy for issuance, revocation, and off-chain verification | Exact nested success; `Some(record)` is usable and `None` means an unknown/deprecated schema | Invocation/contract/decoding failure becomes `IncompatibleDependency`; `None` remains `InvalidSchema` |
-| Registry `is_authorized` | Confirm owner/delegate authority | Exact nested success; `true` authorizes and `false` is a real denial | Call failure becomes `IncompatibleDependency`; a clean `false` becomes `Unauthorized` |
-| Resolver `on_attest` / `on_revoke` | Schema-specific enforcement | Only exact `Ok(Ok(()))` acceptance | Contract error, trap, missing method, or conversion failure becomes `ResolverRejected`; the enclosing invocation rolls back atomically |
-| Indexer issuance push | Maintain the non-authoritative query mirror | Exact nested success | Fail-open by default with `IndexFailed`; strict mode aborts with `IndexerUnavailable` |
-| Indexer revoke/replace callbacks | Update mirror lifecycle metadata | Best-effort success | Failure is intentionally ignored because canonical SAS state is authoritative and must not become unavailable because the mirror is stale |
-| SEP-41 token transfers | Collect or withdraw configured fees | Generated token client call succeeds | Fail closed; Soroban transaction rollback prevents partial SAS/token state |
-
-Two rules follow from the audit:
-
-1. **Authoritative dependencies fail closed and stay typed.** Registry and
-   resolver failures must not be converted into unrelated authorization
-   decisions or leak opaque host traps through the SAS public API.
-2. **Non-authoritative mirrors cannot veto canonical state by accident.**
-   Indexer availability is explicitly configurable for issuance, while
-   lifecycle callbacks remain best-effort because they can be reconciled
-   from SAS state.
-
-The tests include adversarial registries that pass the initialization
-compatibility probe but later omit `get_schema` or `is_authorized`. These
-cases prove the boundary fails as `IncompatibleDependency` and writes remain
-atomic.
-
 
 ## Token Custody
 

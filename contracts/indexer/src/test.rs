@@ -12,7 +12,7 @@ mod mock {
     #[contractimpl]
     impl MockSas {
         #[allow(non_snake_case)]
-        pub fn sasv1(_env: Env) -> bool {
+        pub fn SASV1(_env: Env) -> bool {
             true
         }
 
@@ -39,29 +39,6 @@ mod mock {
                     recipient.into_val(&env),
                     schema_uid.into_val(&env),
                     attester.into_val(&env),
-                ],
-            );
-        }
-
-        pub fn relay_index_at(
-            env: Env,
-            indexer: Address,
-            uid: UID,
-            recipient: Address,
-            schema_uid: UID,
-            attester: Address,
-            attested_at: u64,
-        ) {
-            env.invoke_contract::<()>(
-                &indexer,
-                &Symbol::new(&env, "index_attestation_at"),
-                soroban_sdk::vec![
-                    &env,
-                    uid.into_val(&env),
-                    recipient.into_val(&env),
-                    schema_uid.into_val(&env),
-                    attester.into_val(&env),
-                    attested_at.into_val(&env),
                 ],
             );
         }
@@ -97,7 +74,7 @@ mod mock_attacker {
             );
         }
         #[allow(non_snake_case)]
-        pub fn sasv1(_env: Env) -> bool {
+        pub fn SASV1(_env: Env) -> bool {
             true
         }
     }
@@ -106,10 +83,10 @@ mod mock_attacker {
 /// Registers an indexer bound to a freshly registered `mock::MockSas`, and
 /// returns `(indexer_id, indexer_client, sas_id)`.
 fn setup_indexed(env: &Env) -> (Address, IndexerClient<'_>, Address) {
-    let indexer_id = env.register(Indexer, ());
+    let indexer_id = env.register_contract(None, Indexer);
     let client = IndexerClient::new(env, &indexer_id);
     let admin = Address::generate(env);
-    let sas = env.register(mock::MockSas, ());
+    let sas = env.register_contract(None, mock::MockSas);
     env.as_contract(&sas, || {
         env.storage()
             .instance()
@@ -123,11 +100,11 @@ fn setup_indexed(env: &Env) -> (Address, IndexerClient<'_>, Address) {
 #[test]
 fn test_init_records_admin_and_sas_binding() {
     let env = Env::default();
-    let indexer_id = env.register(Indexer, ());
+    let indexer_id = env.register_contract(None, Indexer);
     let client = IndexerClient::new(&env, &indexer_id);
 
     let admin = Address::generate(&env);
-    let sas = env.register(mock::MockSas, ());
+    let sas = env.register_contract(None, mock::MockSas);
 
     assert_eq!(client.get_admin(), None);
     env.mock_all_auths();
@@ -140,11 +117,11 @@ fn test_init_records_admin_and_sas_binding() {
 #[test]
 fn test_init_twice_is_rejected() {
     let env = Env::default();
-    let indexer_id = env.register(Indexer, ());
+    let indexer_id = env.register_contract(None, Indexer);
     let client = IndexerClient::new(&env, &indexer_id);
 
     let admin = Address::generate(&env);
-    let sas = env.register(mock::MockSas, ());
+    let sas = env.register_contract(None, mock::MockSas);
     env.mock_all_auths();
     client.init(&admin, &sas);
 
@@ -156,9 +133,9 @@ fn test_init_twice_is_rejected() {
 }
 
 fn setup_upgrade_indexer(env: &Env) -> (Address, Address, Address) {
-    let indexer = env.register(Indexer, ());
+    let indexer = env.register_contract(None, Indexer);
     let admin = Address::generate(env);
-    let sas = env.register(mock::MockSas, ());
+    let sas = env.register_contract(None, mock::MockSas);
     env.mock_all_auths();
     IndexerClient::new(env, &indexer).init(&admin, &sas);
     (indexer, admin, sas)
@@ -180,12 +157,12 @@ fn test_upgrade_version_genesis_and_legacy_default() {
 #[test]
 fn test_init_does_not_overwrite_existing_upgrade_version() {
     let env = Env::default();
-    let indexer = env.register(Indexer, ());
+    let indexer = env.register_contract(None, Indexer);
     env.as_contract(&indexer, || {
         env.storage().instance().set(&INDEXER_VERSION, &2u32);
     });
     let admin = Address::generate(&env);
-    let sas = env.register(mock::MockSas, ());
+    let sas = env.register_contract(None, mock::MockSas);
     env.mock_all_auths();
     let client = IndexerClient::new(&env, &indexer);
     client.init(&admin, &sas);
@@ -204,8 +181,9 @@ fn test_upgrade_preparation_moves_one_to_two_emits_event_and_preserves_bindings(
         commit_upgrade(&env, &validated_admin, &new_hash, 2);
     });
 
-    // SDK v22 exposes events from the latest top-level invocation, so inspect
-    // the commit event before making read calls through the generated client.
+    assert_eq!(client.get_version(), 2);
+    assert_eq!(client.get_admin(), Some(admin.clone()));
+    assert_eq!(client.get_sas(), Some(sas));
     let expected = ContractUpgradedEvent {
         old_wasm_hash: BytesN::from_array(&env, &[0u8; 32]),
         new_wasm_hash: new_hash,
@@ -218,15 +196,11 @@ fn test_upgrade_preparation_moves_one_to_two_emits_event_and_preserves_bindings(
             &env,
             (
                 indexer,
-                (symbol_short!("UPGRADED"), admin.clone()).into_val(&env),
+                (symbol_short!("UPGRADED"), admin).into_val(&env),
                 expected.into_val(&env),
             )
         ]
     );
-
-    assert_eq!(client.get_version(), 2);
-    assert_eq!(client.get_admin(), Some(admin));
-    assert_eq!(client.get_sas(), Some(sas));
 }
 
 #[test]
@@ -377,7 +351,7 @@ fn test_index_attestation_rejects_direct_caller() {
 fn test_index_attestation_rejects_unrelated_contract() {
     let env = Env::default();
     let (indexer_id, _client, _sas) = setup_indexed(&env);
-    let attacker = env.register(mock_attacker::MockAttacker, ());
+    let attacker = env.register_contract(None, mock_attacker::MockAttacker);
     let attacker_client = mock_attacker::MockAttackerClient::new(&env, &attacker);
 
     let uid = UID(soroban_sdk::BytesN::from_array(&env, &[9u8; 32]));
@@ -411,7 +385,7 @@ fn test_index_attestation_rejects_unrelated_contract() {
 #[test]
 fn test_index_attestation_rejects_before_init() {
     let env = Env::default();
-    let indexer_id = env.register(Indexer, ());
+    let indexer_id = env.register_contract(None, Indexer);
     let client = IndexerClient::new(&env, &indexer_id);
 
     let uid = UID(soroban_sdk::BytesN::from_array(&env, &[1u8; 32]));
@@ -468,7 +442,7 @@ fn test_get_count_by_tracks_indexing_across_chunk_boundary() {
     let env = Env::default();
     let (indexer_id, client, sas) = setup_indexed(&env);
     let sas_client = mock::MockSasClient::new(&env, &sas);
-    env.cost_estimate().budget().reset_unlimited();
+    env.budget().reset_unlimited();
 
     let recipient = Address::generate(&env);
     let schema_uid = UID(soroban_sdk::BytesN::from_array(&env, &[9u8; 32]));
@@ -649,7 +623,7 @@ fn test_cursor_pagination_large_datasets() {
     // budget; the test host accumulates all 101 into one. Reset so this
     // fixture (now writing the per-key counter to persistent storage, #219)
     // cannot exhaust the budget the assertions below need.
-    env.cost_estimate().budget().reset_unlimited();
+    env.budget().reset_unlimited();
 
     for i in 0..101u8 {
         let mut bytes = [0u8; 32];
@@ -848,7 +822,7 @@ fn test_all_dimensions_chunk_at_max_and_complete_reads_walk_every_chunk() {
     // Each `index_attestation` is its own transaction on-chain, with its own
     // budget; the test host accumulates them into one. Reset so building a
     // 101-entry fixture cannot exhaust the budget the assertions need.
-    env.cost_estimate().budget().reset_unlimited();
+    env.budget().reset_unlimited();
 
     let schema_uid = UID(soroban_sdk::BytesN::from_array(&env, &[7u8; 32]));
     let recipient = Address::generate(&env);
@@ -1122,7 +1096,7 @@ fn test_attester_read_preserves_hot_index_ttl() {
 #[test]
 fn test_read_of_missing_chunk_is_empty_and_creates_no_storage() {
     let env = Env::default();
-    let indexer_id = env.register(Indexer, ());
+    let indexer_id = env.register_contract(None, Indexer);
     let client = IndexerClient::new(&env, &indexer_id);
 
     let unknown_recipient = Address::generate(&env);
@@ -1183,7 +1157,7 @@ fn test_filtered_pagination_skips_a_full_chunk_of_revoked_uids() {
     // Each `index_attestation` is its own transaction on-chain, with its own
     // budget; the test host accumulates them into one. Reset so building a
     // 101-entry fixture cannot exhaust the budget the assertions need.
-    env.cost_estimate().budget().reset_unlimited();
+    env.budget().reset_unlimited();
 
     let schema_uid = UID(soroban_sdk::BytesN::from_array(&env, &[14u8; 32]));
     let recipient = Address::generate(&env);
@@ -1248,95 +1222,4 @@ fn test_chunking_seed_boundaries() {
         let pairs = std::vec![([0; 4], [7; 32]); count];
         chunking_test_support::check_chunking(&pairs);
     }
-}
-
-#[test]
-fn test_complex_query_filters_date_range_status_and_cursor() {
-    let env = Env::default();
-    let (indexer_id, client, sas) = setup_indexed(&env);
-    let sas_client = mock::MockSasClient::new(&env, &sas);
-    let recipient = Address::generate(&env);
-    let schema_uid = UID(BytesN::from_array(&env, &[70u8; 32]));
-    let attester = Address::generate(&env);
-    let uid1 = UID(BytesN::from_array(&env, &[71u8; 32]));
-    let uid2 = UID(BytesN::from_array(&env, &[72u8; 32]));
-    let uid3 = UID(BytesN::from_array(&env, &[73u8; 32]));
-
-    sas_client.relay_index_at(&indexer_id, &uid1, &recipient, &schema_uid, &attester, &100);
-    sas_client.relay_index_at(&indexer_id, &uid2, &recipient, &schema_uid, &attester, &200);
-    sas_client.relay_index_at(&indexer_id, &uid3, &recipient, &schema_uid, &attester, &300);
-
-    let bounded = IndexQueryFilter {
-        from_time: Some(150),
-        to_time: Some(250),
-        include_revoked: true,
-    };
-    let page = client.query_recipient(&recipient, &bounded, &0, &100);
-    assert_eq!(page.uids, soroban_sdk::vec![&env, uid2.clone()]);
-    assert_eq!(page.next_cursor, None);
-
-    env.as_contract(&indexer_id, || {
-        set_index_status(&env, &uid2, IndexStatus::Revoked);
-    });
-    let active_only = IndexQueryFilter {
-        from_time: Some(150),
-        to_time: Some(250),
-        include_revoked: false,
-    };
-    assert_eq!(
-        client
-            .query_recipient(&recipient, &active_only, &0, &100)
-            .uids
-            .len(),
-        0
-    );
-
-    let all = IndexQueryFilter {
-        from_time: None,
-        to_time: None,
-        include_revoked: true,
-    };
-    let first = client.query_recipient(&recipient, &all, &0, &2);
-    assert_eq!(first.uids, soroban_sdk::vec![&env, uid1, uid2]);
-    assert_eq!(first.next_cursor, Some(2));
-    let second = client.query_recipient(&recipient, &all, &2, &2);
-    assert_eq!(second.uids, soroban_sdk::vec![&env, uid3]);
-    assert_eq!(second.next_cursor, None);
-
-    let invalid = IndexQueryFilter {
-        from_time: Some(300),
-        to_time: Some(100),
-        include_revoked: true,
-    };
-    assert_eq!(
-        client.try_query_recipient(&recipient, &invalid, &0, &10),
-        Err(Ok(SASError::InvalidValue.into()))
-    );
-}
-
-#[test]
-fn test_pause_blocks_index_writes_but_keeps_queries_available() {
-    let env = Env::default();
-    let indexer_id = env.register(Indexer, ());
-    let client = IndexerClient::new(&env, &indexer_id);
-    let admin = Address::generate(&env);
-    let sas = env.register(mock::MockSas, ());
-    let sas_client = mock::MockSasClient::new(&env, &sas);
-    env.mock_all_auths();
-    client.init(&admin, &sas);
-    client.pause();
-    assert!(client.is_paused());
-
-    let uid = UID(BytesN::from_array(&env, &[81u8; 32]));
-    let schema_uid = UID(BytesN::from_array(&env, &[82u8; 32]));
-    let recipient = Address::generate(&env);
-    let attester = Address::generate(&env);
-    let result = sas_client.try_relay_index(&indexer_id, &uid, &recipient, &schema_uid, &attester);
-    assert!(result.is_err());
-    assert_eq!(client.get_count_by_recipient(&recipient), 0);
-
-    client.unpause();
-    assert!(!client.is_paused());
-    sas_client.relay_index(&indexer_id, &uid, &recipient, &schema_uid, &attester);
-    assert_eq!(client.get_count_by_recipient(&recipient), 1);
 }

@@ -42,15 +42,15 @@ fn demo_register_schema_then_attest_verify_and_revoke() {
     // --- Deploy the three parties: a schema registry, the core SAS
     // contract, and a resolver the demo schema will delegate to. ---
     let admin = Address::generate(&env);
-    let registry_id = env.register(SchemaRegistry, ());
+    let registry_id = env.register_contract(None, SchemaRegistry);
     let registry = SchemaRegistryClient::new(&env, &registry_id);
     registry.init(&admin);
 
-    let sas_id = env.register(SAS, ());
+    let sas_id = env.register_contract(None, SAS);
     let sas = SASClient::new(&env, &sas_id);
     sas.init(&admin, &registry_id);
 
-    let resolver_id = env.register(noop_resolver::NoopResolver, ());
+    let resolver_id = env.register_contract(None, noop_resolver::NoopResolver);
 
     println!(
         "1. Deployed schema-registry ({registry_id:?}) and sas ({sas_id:?}), bound together.\n"

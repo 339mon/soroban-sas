@@ -70,7 +70,7 @@ pub mod mock1 {
         }
 
         #[allow(non_snake_case)]
-        pub fn sasreg(_env: Env) -> bool {
+        pub fn SASREG(_env: Env) -> bool {
             true
         }
 
@@ -104,7 +104,7 @@ pub mod mock2 {
             false
         }
         #[allow(non_snake_case)]
-        pub fn sasreg(_env: Env) -> bool {
+        pub fn SASREG(_env: Env) -> bool {
             true
         }
         pub fn get_schema(_env: Env, _uid: UID) -> Option<soroban_sas_common::SchemaRecord> {
@@ -167,8 +167,8 @@ pub mod mock4 {
 #[test]
 fn test_admin_returns_initialized_admin() {
     let env = Env::default();
-    let registry_id = env.register(mock1::MockRegistry, ());
-    let sas_id = env.register(SAS, ());
+    let registry_id = env.register_contract(None, mock1::MockRegistry);
+    let sas_id = env.register_contract(None, SAS);
     let sas_client = SASClient::new(&env, &sas_id);
     let admin = Address::generate(&env);
 
@@ -181,7 +181,7 @@ fn test_admin_returns_initialized_admin() {
 #[test]
 fn test_admin_before_init_returns_not_initialized() {
     let env = Env::default();
-    let sas_id = env.register(SAS, ());
+    let sas_id = env.register_contract(None, SAS);
     let sas_client = SASClient::new(&env, &sas_id);
 
     assert_eq!(
@@ -195,10 +195,10 @@ fn test_happy_path_attestation() {
     let env = Env::default();
 
     // Deploy Mock Registry
-    let registry_id = env.register(mock1::MockRegistry, ());
+    let registry_id = env.register_contract(None, mock1::MockRegistry);
 
     // Deploy SAS
-    let sas_id = env.register(SAS, ());
+    let sas_id = env.register_contract(None, SAS);
     let sas_client = SASClient::new(&env, &sas_id);
 
     let admin = Address::generate(&env);
@@ -237,8 +237,8 @@ fn test_happy_path_attestation() {
 fn test_auth_failure_missing_signature() {
     let env = Env::default();
 
-    let registry_id = env.register(mock1::MockRegistry, ());
-    let sas_id = env.register(SAS, ());
+    let registry_id = env.register_contract(None, mock1::MockRegistry);
+    let sas_id = env.register_contract(None, SAS);
     let sas_client = SASClient::new(&env, &sas_id);
 
     let admin = Address::generate(&env);
@@ -274,8 +274,8 @@ fn test_auth_failure_missing_signature() {
 fn test_schema_validation_rejection() {
     let env = Env::default();
 
-    let registry_id = env.register(mock2::MockRejectRegistry, ());
-    let sas_id = env.register(SAS, ());
+    let registry_id = env.register_contract(None, mock2::MockRejectRegistry);
+    let sas_id = env.register_contract(None, SAS);
     let sas_client = SASClient::new(&env, &sas_id);
 
     let admin = Address::generate(&env);
@@ -312,8 +312,8 @@ fn test_schema_validation_rejection() {
 fn test_revocation_success() {
     let env = Env::default();
 
-    let registry_id = env.register(mock1::MockRegistry, ());
-    let sas_id = env.register(SAS, ());
+    let registry_id = env.register_contract(None, mock1::MockRegistry);
+    let sas_id = env.register_contract(None, SAS);
     let sas_client = SASClient::new(&env, &sas_id);
 
     let admin = Address::generate(&env);
@@ -363,8 +363,8 @@ mod replace {
     /// needs to build a replacement for it.
     pub fn setup(revocable: bool) -> Fixture {
         let env = Env::default();
-        let registry_id = env.register(mock1::MockRegistry, ());
-        let sas_id = env.register(SAS, ());
+        let registry_id = env.register_contract(None, mock1::MockRegistry);
+        let sas_id = env.register_contract(None, SAS);
         let sas_client = SASClient::new(&env, &sas_id);
 
         let admin = Address::generate(&env);
@@ -533,8 +533,8 @@ fn test_replace_attestation_rejects_mismatched_recipient() {
 fn test_revocation_failure() {
     let env = Env::default();
 
-    let registry_id = env.register(mock1::MockRegistry, ());
-    let sas_id = env.register(SAS, ());
+    let registry_id = env.register_contract(None, mock1::MockRegistry);
+    let sas_id = env.register_contract(None, SAS);
     let sas_client = SASClient::new(&env, &sas_id);
 
     let admin = Address::generate(&env);
@@ -571,8 +571,8 @@ fn test_revocation_failure() {
 fn test_multi_attest_returns_both_uids() {
     let env = Env::default();
 
-    let registry_id = env.register(mock1::MockRegistry, ());
-    let sas_id = env.register(SAS, ());
+    let registry_id = env.register_contract(None, mock1::MockRegistry);
+    let sas_id = env.register_contract(None, SAS);
     let sas_client = SASClient::new(&env, &sas_id);
 
     let admin = Address::generate(&env);
@@ -630,8 +630,8 @@ fn test_multi_attest_returns_both_uids() {
 fn test_batch_operations() {
     let env = Env::default();
 
-    let registry_id = env.register(mock1::MockRegistry, ());
-    let sas_id = env.register(SAS, ());
+    let registry_id = env.register_contract(None, mock1::MockRegistry);
+    let sas_id = env.register_contract(None, SAS);
     let sas_client = SASClient::new(&env, &sas_id);
 
     let admin = Address::generate(&env);
@@ -685,7 +685,7 @@ fn test_batch_operations() {
 #[test]
 fn test_replace_attestation_indexes_new_uid() {
     let f = replace::setup(true);
-    let indexer_id = f.env.register(mock4::MockIndexer, ());
+    let indexer_id = f.env.register_contract(None, mock4::MockIndexer);
     let indexer_client = mock4::MockIndexerClient::new(&f.env, &indexer_id);
     let new_attestation = f.new_attestation([2u8; 32]);
 
@@ -703,10 +703,10 @@ fn test_replace_attestation_indexes_new_uid() {
 fn test_resolver_callback() {
     let env = Env::default();
 
-    let registry_id = env.register(mock1::MockRegistry, ());
-    let _resolver_id = env.register(mock3::MockResolver, ());
+    let registry_id = env.register_contract(None, mock1::MockRegistry);
+    let _resolver_id = env.register_contract(None, mock3::MockResolver);
 
-    let sas_id = env.register(SAS, ());
+    let sas_id = env.register_contract(None, SAS);
     let sas_client = SASClient::new(&env, &sas_id);
 
     let admin = Address::generate(&env);
@@ -742,8 +742,8 @@ fn test_resolver_callback() {
 fn test_attest_with_value_collects_the_fee() {
     let env = Env::default();
 
-    let registry_id = env.register(mock1::MockRegistry, ());
-    let sas_id = env.register(SAS, ());
+    let registry_id = env.register_contract(None, mock1::MockRegistry);
+    let sas_id = env.register_contract(None, SAS);
     let sas_client = SASClient::new(&env, &sas_id);
 
     let admin = Address::generate(&env);
@@ -776,8 +776,8 @@ fn test_attest_with_value_collects_the_fee() {
 fn test_attest_with_value_zero_skips_transfer() {
     let env = Env::default();
 
-    let registry_id = env.register(mock1::MockRegistry, ());
-    let sas_id = env.register(SAS, ());
+    let registry_id = env.register_contract(None, mock1::MockRegistry);
+    let sas_id = env.register_contract(None, SAS);
     let sas_client = SASClient::new(&env, &sas_id);
 
     let admin = Address::generate(&env);
@@ -803,8 +803,8 @@ fn test_attest_with_value_zero_skips_transfer() {
 fn test_attest_with_value_rejects_negative_value() {
     let env = Env::default();
 
-    let registry_id = env.register(mock1::MockRegistry, ());
-    let sas_id = env.register(SAS, ());
+    let registry_id = env.register_contract(None, mock1::MockRegistry);
+    let sas_id = env.register_contract(None, SAS);
     let sas_client = SASClient::new(&env, &sas_id);
 
     let admin = Address::generate(&env);
@@ -828,8 +828,8 @@ fn test_attest_with_value_rejects_negative_value() {
 fn test_attest_with_value_insufficient_balance_issues_nothing() {
     let env = Env::default();
 
-    let registry_id = env.register(mock1::MockRegistry, ());
-    let sas_id = env.register(SAS, ());
+    let registry_id = env.register_contract(None, mock1::MockRegistry);
+    let sas_id = env.register_contract(None, SAS);
     let sas_client = SASClient::new(&env, &sas_id);
 
     let admin = Address::generate(&env);
@@ -860,8 +860,8 @@ fn test_attest_with_value_insufficient_balance_issues_nothing() {
 #[test]
 fn test_init_requires_admin_authorization() {
     let env = Env::default();
-    let registry_id = env.register(mock1::MockRegistry, ());
-    let sas_id = env.register(SAS, ());
+    let registry_id = env.register_contract(None, mock1::MockRegistry);
+    let sas_id = env.register_contract(None, SAS);
     let sas_client = SASClient::new(&env, &sas_id);
 
     let admin = Address::generate(&env);
@@ -873,8 +873,8 @@ fn test_init_requires_admin_authorization() {
 #[test]
 fn test_second_revocation_is_rejected_for_direct_and_batch_paths() {
     let env = Env::default();
-    let registry_id = env.register(mock1::MockRegistry, ());
-    let sas_id = env.register(SAS, ());
+    let registry_id = env.register_contract(None, mock1::MockRegistry);
+    let sas_id = env.register_contract(None, SAS);
     let sas_client = SASClient::new(&env, &sas_id);
 
     let admin = Address::generate(&env);
@@ -905,8 +905,8 @@ fn test_second_revocation_is_rejected_for_direct_and_batch_paths() {
 #[test]
 fn test_withdraw_tokens_requires_authorized_balance_and_event_path() {
     let env = Env::default();
-    let registry_id = env.register(mock1::MockRegistry, ());
-    let sas_id = env.register(SAS, ());
+    let registry_id = env.register_contract(None, mock1::MockRegistry);
+    let sas_id = env.register_contract(None, SAS);
     let sas_client = SASClient::new(&env, &sas_id);
 
     let admin = Address::generate(&env);
@@ -944,8 +944,8 @@ fn test_withdraw_tokens_requires_authorized_balance_and_event_path() {
 fn test_init_twice_is_rejected() {
     let env = Env::default();
 
-    let registry_id = env.register(mock1::MockRegistry, ());
-    let sas_id = env.register(SAS, ());
+    let registry_id = env.register_contract(None, mock1::MockRegistry);
+    let sas_id = env.register_contract(None, SAS);
     let sas_client = SASClient::new(&env, &sas_id);
 
     let admin = Address::generate(&env);
@@ -957,8 +957,8 @@ fn test_init_twice_is_rejected() {
 }
 
 fn setup_upgrade_sas(env: &Env) -> (Address, Address, Address) {
-    let registry = env.register(mock1::MockRegistry, ());
-    let sas = env.register(SAS, ());
+    let registry = env.register_contract(None, mock1::MockRegistry);
+    let sas = env.register_contract(None, SAS);
     let admin = Address::generate(env);
     env.mock_all_auths();
     SASClient::new(env, &sas).init(&admin, &registry);
@@ -981,8 +981,8 @@ fn test_upgrade_version_genesis_and_legacy_default() {
 #[test]
 fn test_init_does_not_overwrite_existing_upgrade_version() {
     let env = Env::default();
-    let registry = env.register(mock1::MockRegistry, ());
-    let sas = env.register(SAS, ());
+    let registry = env.register_contract(None, mock1::MockRegistry);
+    let sas = env.register_contract(None, SAS);
     env.as_contract(&sas, || {
         env.storage().instance().set(&crate::SAS_VERSION, &2u32);
     });
@@ -1007,8 +1007,16 @@ fn test_upgrade_preparation_moves_one_to_two_emits_event_and_preserves_bindings(
         crate::commit_upgrade(&env, &validated_admin, &new_hash, 2);
     });
 
-    // SDK v22 exposes events from the latest top-level invocation. Inspect
-    // the upgrade event before generated-client reads replace that view.
+    assert_eq!(client.get_version(), 2);
+    assert_eq!(client.admin(), admin.clone());
+    assert_eq!(client.get_indexer(), Some(indexer));
+    let stored_registry: Address = env.as_contract(&sas, || {
+        env.storage()
+            .instance()
+            .get(&crate::SCHEMA_REGISTRY)
+            .unwrap()
+    });
+    assert_eq!(stored_registry, registry);
     let expected = ContractUpgradedEvent {
         old_wasm_hash: BytesN::from_array(&env, &[0u8; 32]),
         new_wasm_hash: new_hash,
@@ -1020,23 +1028,12 @@ fn test_upgrade_preparation_moves_one_to_two_emits_event_and_preserves_bindings(
         soroban_sdk::vec![
             &env,
             (
-                sas.clone(),
-                (symbol_short!("UPGRADED"), admin.clone()).into_val(&env),
+                sas,
+                (symbol_short!("UPGRADED"), admin).into_val(&env),
                 expected.into_val(&env),
             )
         ]
     );
-
-    assert_eq!(client.get_version(), 2);
-    assert_eq!(client.admin(), admin);
-    assert_eq!(client.get_indexer(), Some(indexer));
-    let stored_registry: Address = env.as_contract(&sas, || {
-        env.storage()
-            .instance()
-            .get(&crate::SCHEMA_REGISTRY)
-            .unwrap()
-    });
-    assert_eq!(stored_registry, registry);
 }
 
 #[test]
@@ -1167,8 +1164,8 @@ fn test_failed_wasm_swap_rolls_back_version_and_tracked_hash() {
 fn test_expired_attestation_reports_already_expired() {
     let env = Env::default();
 
-    let registry_id = env.register(mock1::MockRegistry, ());
-    let sas_id = env.register(SAS, ());
+    let registry_id = env.register_contract(None, mock1::MockRegistry);
+    let sas_id = env.register_contract(None, SAS);
     let sas_client = SASClient::new(&env, &sas_id);
 
     let admin = Address::generate(&env);
@@ -1191,8 +1188,8 @@ fn test_expired_attestation_reports_already_expired() {
 fn test_unknown_schema_reports_invalid_schema() {
     let env = Env::default();
 
-    let registry_id = env.register(mock2::MockRejectRegistry, ());
-    let sas_id = env.register(SAS, ());
+    let registry_id = env.register_contract(None, mock2::MockRejectRegistry);
+    let sas_id = env.register_contract(None, SAS);
     let sas_client = SASClient::new(&env, &sas_id);
 
     let admin = Address::generate(&env);
@@ -1212,8 +1209,8 @@ fn test_unknown_schema_reports_invalid_schema() {
 fn test_attest_rejects_zero_recipient() {
     let env = Env::default();
 
-    let registry_id = env.register(mock1::MockRegistry, ());
-    let sas_id = env.register(SAS, ());
+    let registry_id = env.register_contract(None, mock1::MockRegistry);
+    let sas_id = env.register_contract(None, SAS);
     let sas_client = SASClient::new(&env, &sas_id);
 
     let admin = Address::generate(&env);
@@ -1236,8 +1233,8 @@ fn test_attest_rejects_zero_recipient() {
 fn test_attest_rejects_self_attestation() {
     let env = Env::default();
 
-    let registry_id = env.register(mock1::MockRegistry, ());
-    let sas_id = env.register(SAS, ());
+    let registry_id = env.register_contract(None, mock1::MockRegistry);
+    let sas_id = env.register_contract(None, SAS);
     let sas_client = SASClient::new(&env, &sas_id);
 
     let admin = Address::generate(&env);
@@ -1256,8 +1253,8 @@ fn test_attest_rejects_self_attestation() {
 fn test_non_revocable_attestation_reports_not_revocable() {
     let env = Env::default();
 
-    let registry_id = env.register(mock1::MockRegistry, ());
-    let sas_id = env.register(SAS, ());
+    let registry_id = env.register_contract(None, mock1::MockRegistry);
+    let sas_id = env.register_contract(None, SAS);
     let sas_client = SASClient::new(&env, &sas_id);
 
     let admin = Address::generate(&env);
@@ -1280,8 +1277,8 @@ fn test_non_revocable_attestation_reports_not_revocable() {
 fn test_revoking_unknown_uid_reports_attestation_not_found() {
     let env = Env::default();
 
-    let registry_id = env.register(mock1::MockRegistry, ());
-    let sas_id = env.register(SAS, ());
+    let registry_id = env.register_contract(None, mock1::MockRegistry);
+    let sas_id = env.register_contract(None, SAS);
     let sas_client = SASClient::new(&env, &sas_id);
 
     let admin = Address::generate(&env);
@@ -1299,8 +1296,8 @@ fn test_revoking_unknown_uid_reports_attestation_not_found() {
 fn test_attestation_expiration() {
     let env = Env::default();
 
-    let registry_id = env.register(mock1::MockRegistry, ());
-    let sas_id = env.register(SAS, ());
+    let registry_id = env.register_contract(None, mock1::MockRegistry);
+    let sas_id = env.register_contract(None, SAS);
     let sas_client = SASClient::new(&env, &sas_id);
 
     let admin = Address::generate(&env);
@@ -1336,8 +1333,8 @@ fn test_attestation_expiration() {
 fn test_attest_by_delegation() {
     let env = Env::default();
 
-    let registry_id = env.register(mock1::MockRegistry, ());
-    let sas_id = env.register(SAS, ());
+    let registry_id = env.register_contract(None, mock1::MockRegistry);
+    let sas_id = env.register_contract(None, SAS);
     let sas_client = SASClient::new(&env, &sas_id);
 
     let admin = Address::generate(&env);
@@ -1388,8 +1385,8 @@ mod offchain {
 
     pub fn setup(seed: [u8; 32]) -> Setup {
         let env = Env::default();
-        let registry_id = env.register(mock1::MockRegistry, ());
-        let sas_id = env.register(SAS, ());
+        let registry_id = env.register_contract(None, mock1::MockRegistry);
+        let sas_id = env.register_contract(None, SAS);
         let sas_client = SASClient::new(&env, &sas_id);
 
         let admin = Address::generate(&env);
@@ -1999,8 +1996,8 @@ fn test_verify_offchain_attestation_via_registered_key() {
 #[test]
 fn test_comprehensive_lifecycle() {
     let env = Env::default();
-    let registry_id = env.register(mock1::MockRegistry, ());
-    let sas_id = env.register(SAS, ());
+    let registry_id = env.register_contract(None, mock1::MockRegistry);
+    let sas_id = env.register_contract(None, SAS);
     let sas_client = SASClient::new(&env, &sas_id);
 
     let admin = Address::generate(&env);
@@ -2045,8 +2042,8 @@ fn test_comprehensive_lifecycle() {
 #[test]
 fn test_attest_emits_attestation_issued_event() {
     let env = Env::default();
-    let registry_id = env.register(mock1::MockRegistry, ());
-    let sas_id = env.register(SAS, ());
+    let registry_id = env.register_contract(None, mock1::MockRegistry);
+    let sas_id = env.register_contract(None, SAS);
     let sas_client = SASClient::new(&env, &sas_id);
 
     let admin = Address::generate(&env);
@@ -2097,8 +2094,8 @@ fn test_attest_emits_attestation_issued_event() {
 #[test]
 fn test_revoke_emits_attestation_revoked_event() {
     let env = Env::default();
-    let registry_id = env.register(mock1::MockRegistry, ());
-    let sas_id = env.register(SAS, ());
+    let registry_id = env.register_contract(None, mock1::MockRegistry);
+    let sas_id = env.register_contract(None, SAS);
     let sas_client = SASClient::new(&env, &sas_id);
 
     let admin = Address::generate(&env);
@@ -2155,8 +2152,8 @@ fn test_revoke_emits_attestation_revoked_event() {
 #[test]
 fn test_set_indexer_emits_event_with_old_and_new_value() {
     let env = Env::default();
-    let registry_id = env.register(mock1::MockRegistry, ());
-    let sas_id = env.register(SAS, ());
+    let registry_id = env.register_contract(None, mock1::MockRegistry);
+    let sas_id = env.register_contract(None, SAS);
     let sas_client = SASClient::new(&env, &sas_id);
 
     let admin = Address::generate(&env);
@@ -2414,8 +2411,8 @@ pub mod mock_trap_indexer {
 
 fn fee_test_env() -> (Env, SASClient<'static>, Address, Address, Address, Address) {
     let env = Env::default();
-    let registry_id = env.register(mock1::MockRegistry, ());
-    let sas_id = env.register(SAS, ());
+    let registry_id = env.register_contract(None, mock1::MockRegistry);
+    let sas_id = env.register_contract(None, SAS);
     let sas_client = SASClient::new(&env, &sas_id);
     let admin = Address::generate(&env);
     env.mock_all_auths();
@@ -2469,8 +2466,8 @@ fn test_attest_with_value_rejects_wrong_token_and_short_amount() {
 #[test]
 fn test_set_indexer_requires_admin_auth() {
     let env = Env::default();
-    let registry_id = env.register(mock1::MockRegistry, ());
-    let sas_id = env.register(SAS, ());
+    let registry_id = env.register_contract(None, mock1::MockRegistry);
+    let sas_id = env.register_contract(None, SAS);
     let sas_client = SASClient::new(&env, &sas_id);
 
     let admin = Address::generate(&env);
@@ -2486,8 +2483,8 @@ fn test_set_indexer_requires_admin_auth() {
 #[test]
 fn test_set_indexer_strict_emits_event_toggling_false_to_true() {
     let env = Env::default();
-    let registry_id = env.register(mock1::MockRegistry, ());
-    let sas_id = env.register(SAS, ());
+    let registry_id = env.register_contract(None, mock1::MockRegistry);
+    let sas_id = env.register_contract(None, SAS);
     let sas_client = SASClient::new(&env, &sas_id);
 
     let admin = Address::generate(&env);
@@ -2497,6 +2494,7 @@ fn test_set_indexer_strict_emits_event_toggling_false_to_true() {
     assert!(!sas_client.get_indexer_strict());
 
     sas_client.set_indexer_strict(&true);
+    assert!(sas_client.get_indexer_strict());
 
     let expected = IndexerStrictUpdatedEvent {
         old_strict: false,
@@ -2515,16 +2513,13 @@ fn test_set_indexer_strict_emits_event_toggling_false_to_true() {
             )
         ]
     );
-    // SDK 22 exposes events from the most recent contract invocation, so
-    // verify state only after asserting the event emitted by the write.
-    assert!(sas_client.get_indexer_strict());
 }
 
 #[test]
 fn test_set_indexer_strict_emits_event_toggling_true_to_false() {
     let env = Env::default();
-    let registry_id = env.register(mock1::MockRegistry, ());
-    let sas_id = env.register(SAS, ());
+    let registry_id = env.register_contract(None, mock1::MockRegistry);
+    let sas_id = env.register_contract(None, SAS);
     let sas_client = SASClient::new(&env, &sas_id);
 
     let admin = Address::generate(&env);
@@ -2533,6 +2528,7 @@ fn test_set_indexer_strict_emits_event_toggling_true_to_false() {
 
     sas_client.set_indexer_strict(&true);
     sas_client.set_indexer_strict(&false);
+    assert!(!sas_client.get_indexer_strict());
 
     let expected = IndexerStrictUpdatedEvent {
         old_strict: true,
@@ -2551,16 +2547,13 @@ fn test_set_indexer_strict_emits_event_toggling_true_to_false() {
             )
         ]
     );
-    // Read after event inspection; a subsequent invocation resets the
-    // SDK 22 test event view to that invocation's events.
-    assert!(!sas_client.get_indexer_strict());
 }
 
 #[test]
 fn test_set_indexer_strict_requires_admin_auth_and_emits_no_event_on_failure() {
     let env = Env::default();
-    let registry_id = env.register(mock1::MockRegistry, ());
-    let sas_id = env.register(SAS, ());
+    let registry_id = env.register_contract(None, mock1::MockRegistry);
+    let sas_id = env.register_contract(None, SAS);
     let sas_client = SASClient::new(&env, &sas_id);
 
     let admin = Address::generate(&env);
@@ -2619,14 +2612,14 @@ fn test_clear_fee_makes_attestation_fee_free_only_at_zero() {
 #[test]
 fn test_attest_fails_open_when_indexer_traps() {
     let (env, sas_client, sas_id, _admin, attester, recipient) = fee_test_env();
-    let indexer_id = env.register(mock_trap_indexer::TrappingIndexer, ());
+    let indexer_id = env.register_contract(None, mock_trap_indexer::TrappingIndexer);
     sas_client.set_indexer(&indexer_id);
 
     let attestation = attestation_fixture(&env, &attester, &recipient, [46u8; 32]);
     // Issuance still succeeds despite the trapping indexer.
     let uid = sas_client.attest(&attestation);
     assert_eq!(uid, attestation.uid);
-    let issuance_events = env.events().all();
+    assert!(sas_client.verify_attestation(&attestation.uid));
 
     // ... and the missed push is observable as an IndexFailed event.
     let topics: soroban_sdk::Vec<soroban_sdk::Val> = (
@@ -2639,15 +2632,14 @@ fn test_attest_fails_open_when_indexer_traps() {
         topics,
         attestation.uid.clone().into_val(&env),
     );
-    assert!(issuance_events.contains(expected_event));
-    assert!(sas_client.verify_attestation(&attestation.uid));
+    assert!(env.events().all().contains(expected_event));
 }
 
 #[test]
 fn test_attest_fails_open_when_indexer_is_incompatible() {
     let (env, sas_client, _sas_id, _admin, attester, recipient) = fee_test_env();
     // A contract with no `index_attestation` entry point at all.
-    let indexer_id = env.register(mock3::MockResolver, ());
+    let indexer_id = env.register_contract(None, mock3::MockResolver);
     sas_client.set_indexer(&indexer_id);
 
     let attestation = attestation_fixture(&env, &attester, &recipient, [47u8; 32]);
@@ -2657,7 +2649,7 @@ fn test_attest_fails_open_when_indexer_is_incompatible() {
 #[test]
 fn test_attest_fails_closed_when_strict_and_indexer_traps() {
     let (env, sas_client, _sas_id, _admin, attester, recipient) = fee_test_env();
-    let indexer_id = env.register(mock_trap_indexer::TrappingIndexer, ());
+    let indexer_id = env.register_contract(None, mock_trap_indexer::TrappingIndexer);
     sas_client.set_indexer(&indexer_id);
     sas_client.set_indexer_strict(&true);
     assert!(sas_client.get_indexer_strict());
@@ -2671,14 +2663,14 @@ fn test_attest_fails_closed_when_strict_and_indexer_traps() {
 #[test]
 fn test_reindex_attestation_replays_after_indexer_recovers() {
     let (env, sas_client, _sas_id, _admin, attester, recipient) = fee_test_env();
-    let trap_id = env.register(mock_trap_indexer::TrappingIndexer, ());
+    let trap_id = env.register_contract(None, mock_trap_indexer::TrappingIndexer);
     sas_client.set_indexer(&trap_id);
 
     let attestation = attestation_fixture(&env, &attester, &recipient, [49u8; 32]);
     let uid = sas_client.attest(&attestation); // succeeds fail-open, mirror missed it
 
     // Operator rotates to a healthy indexer and reconciles.
-    let good_id = env.register(mock4::MockIndexer, ());
+    let good_id = env.register_contract(None, mock4::MockIndexer);
     let good = mock4::MockIndexerClient::new(&env, &good_id);
     sas_client.set_indexer(&good_id);
     sas_client.reindex_attestation(&uid);
@@ -2689,60 +2681,15 @@ fn test_reindex_attestation_replays_after_indexer_recovers() {
 }
 
 #[test]
-fn test_bulk_reindex_replays_current_argument_shape_and_reports_missing_uids() {
-    let (env, sas_client, _sas_id, _admin, attester, recipient) = fee_test_env();
-    let trap_id = env.register(mock_trap_indexer::TrappingIndexer, ());
-    sas_client.set_indexer(&trap_id);
-
-    let first = attestation_fixture(&env, &attester, &recipient, [51u8; 32]);
-    let second = attestation_fixture(&env, &attester, &recipient, [52u8; 32]);
-    let first_uid = sas_client.attest(&first);
-    let second_uid = sas_client.attest(&second);
-    let missing = UID(BytesN::from_array(&env, &[99u8; 32]));
-
-    // The healthy mock implements the legacy four-argument indexer API. The
-    // replay helper probes the timestamp-aware API first, then must fall back
-    // with the exact legacy argument shape rather than the old single-record
-    // bulk call that trapped every replay.
-    let good_id = env.register(mock4::MockIndexer, ());
-    let good = mock4::MockIndexerClient::new(&env, &good_id);
-    sas_client.set_indexer(&good_id);
-    let failed = sas_client.bulk_reindex(&soroban_sdk::vec![
-        &env,
-        first_uid.clone(),
-        missing.clone(),
-        second_uid.clone(),
-    ]);
-
-    assert_eq!(failed, soroban_sdk::vec![&env, missing]);
-    let indexed = good.get_attestations_by_recipient(&recipient);
-    assert!(indexed.contains(&first_uid));
-    assert!(indexed.contains(&second_uid));
-}
-
-#[test]
 fn test_reindex_attestation_reports_still_unavailable_indexer() {
     let (env, sas_client, _sas_id, _admin, attester, recipient) = fee_test_env();
-    let trap_id = env.register(mock_trap_indexer::TrappingIndexer, ());
+    let trap_id = env.register_contract(None, mock_trap_indexer::TrappingIndexer);
     sas_client.set_indexer(&trap_id);
     let attestation = attestation_fixture(&env, &attester, &recipient, [50u8; 32]);
     let uid = sas_client.attest(&attestation);
 
     let res = sas_client.try_reindex_attestation(&uid);
     assert_eq!(res, Err(Ok(SASError::IndexerUnavailable.into())));
-}
-
-#[test]
-fn test_bulk_reindex_records_contract_level_indexer_failure() {
-    let (env, sas_client, _sas_id, _admin, attester, recipient) = fee_test_env();
-    let trap_id = env.register_contract(None, mock_trap_indexer::TrappingIndexer);
-    sas_client.set_indexer(&trap_id);
-
-    let attestation = attestation_fixture(&env, &attester, &recipient, [51u8; 32]);
-    let uid = sas_client.attest(&attestation);
-
-    let failed = sas_client.bulk_reindex(&soroban_sdk::vec![&env, uid.clone()]);
-    assert_eq!(failed, soroban_sdk::vec![&env, uid]);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -2799,8 +2746,8 @@ fn test_delegated_attest_normalizes_time_to_ledger_timestamp() {
     let seed = [71u8; 32];
     let signing_key = SigningKey::from_bytes(&seed);
     let env = Env::default();
-    let registry_id = env.register(mock1::MockRegistry, ());
-    let sas_id = env.register(SAS, ());
+    let registry_id = env.register_contract(None, mock1::MockRegistry);
+    let sas_id = env.register_contract(None, SAS);
     let sas_client = SASClient::new(&env, &sas_id);
 
     let admin = Address::generate(&env);
@@ -2885,15 +2832,15 @@ fn test_delegated_issuance_and_revocation_e2e() {
     env.mock_all_auths();
 
     let admin = Address::generate(&env);
-    let registry_id = env.register(SchemaRegistry, ());
+    let registry_id = env.register_contract(None, SchemaRegistry);
     let registry = SchemaRegistryClient::new(&env, &registry_id);
     registry.init(&admin);
 
-    let sas_id = env.register(SAS, ());
+    let sas_id = env.register_contract(None, SAS);
     let sas = SASClient::new(&env, &sas_id);
     sas.init(&admin, &registry_id);
 
-    let resolver_id = env.register(mock3::MockResolver, ());
+    let resolver_id = env.register_contract(None, mock3::MockResolver);
 
     let owner = Address::generate(&env);
     let delegate = Address::generate(&env);
@@ -2974,9 +2921,9 @@ fn test_delegated_issuance_and_revocation_e2e() {
 #[test]
 fn test_admin_transfer_happy_path() {
     let env = Env::default();
-    let contract_id = env.register(SAS, ());
+    let contract_id = env.register_contract(None, SAS);
     let sas = SASClient::new(&env, &contract_id);
-    let registry_id = env.register(mock1::MockRegistry, ());
+    let registry_id = env.register_contract(None, mock1::MockRegistry);
 
     let old_admin = Address::generate(&env);
     let new_admin = Address::generate(&env);
@@ -3041,9 +2988,9 @@ fn test_admin_transfer_happy_path() {
 #[test]
 fn test_admin_transfer_cancellation_via_reproposal() {
     let env = Env::default();
-    let contract_id = env.register(SAS, ());
+    let contract_id = env.register_contract(None, SAS);
     let sas = SASClient::new(&env, &contract_id);
-    let registry_id = env.register(mock1::MockRegistry, ());
+    let registry_id = env.register_contract(None, mock1::MockRegistry);
 
     let admin = Address::generate(&env);
     let candidate1 = Address::generate(&env);
@@ -3069,9 +3016,9 @@ fn test_admin_transfer_cancellation_via_reproposal() {
 #[test]
 fn test_accept_admin_no_proposal_panics() {
     let env = Env::default();
-    let contract_id = env.register(SAS, ());
+    let contract_id = env.register_contract(None, SAS);
     let sas = SASClient::new(&env, &contract_id);
-    let registry_id = env.register(mock1::MockRegistry, ());
+    let registry_id = env.register_contract(None, mock1::MockRegistry);
 
     let admin = Address::generate(&env);
     env.mock_all_auths();
@@ -3087,9 +3034,9 @@ fn test_accept_admin_no_proposal_panics() {
 #[test]
 fn test_accept_admin_unauthorized() {
     let env = Env::default();
-    let contract_id = env.register(SAS, ());
+    let contract_id = env.register_contract(None, SAS);
     let sas = SASClient::new(&env, &contract_id);
-    let registry_id = env.register(mock1::MockRegistry, ());
+    let registry_id = env.register_contract(None, mock1::MockRegistry);
 
     let admin = Address::generate(&env);
     let candidate = Address::generate(&env);
@@ -3107,9 +3054,9 @@ fn test_accept_admin_unauthorized() {
 #[test]
 fn test_get_delegation_nonce() {
     let env = Env::default();
-    let contract_id = env.register(SAS, ());
+    let contract_id = env.register_contract(None, SAS);
     let sas = SASClient::new(&env, &contract_id);
-    let registry_id = env.register(mock1::MockRegistry, ());
+    let registry_id = env.register_contract(None, mock1::MockRegistry);
 
     let admin = Address::generate(&env);
     let attester = Address::generate(&env);
@@ -3424,9 +3371,9 @@ fn test_multi_revoke_does_not_emit_batch_revoked_on_a_reverted_call() {
     assert!(res.is_err());
 
     let all_events = env.events().all();
-    // SDK v22 exposes the latest invocation's committed events; a reverted
-    // `multi_revoke` contributes none.
-    assert!(all_events.is_empty());
+    // Only the earlier successful `attest` call's event remains; nothing
+    // from the reverted `multi_revoke`.
+    assert_eq!(all_events.len(), 1);
 }
 
 mod fee_config_events {
@@ -3436,8 +3383,8 @@ mod fee_config_events {
 
     fn setup() -> (Env, Address, Address) {
         let env = Env::default();
-        let registry = env.register(mock1::MockRegistry, ());
-        let sas = env.register(SAS, ());
+        let registry = env.register_contract(None, mock1::MockRegistry);
+        let sas = env.register_contract(None, SAS);
         let admin = Address::generate(&env);
         env.mock_all_auths();
         SASClient::new(&env, &sas).init(&admin, &registry);
@@ -3543,12 +3490,13 @@ mod fee_config_events {
         let token = Address::generate(&env);
         let client = SASClient::new(&env, &sas);
         client.set_fee(&token, &25);
+        let before = env.events().all();
         for amount in [0, -1, i128::MIN] {
             assert_eq!(
                 client.try_set_fee(&token, &amount),
                 Err(Ok(SASError::InvalidValue.into()))
             );
-            assert!(env.events().all().is_empty());
+            assert_eq!(env.events().all(), before);
             assert_eq!(client.get_fee(), Some((token.clone(), 25)));
         }
     }
@@ -3559,11 +3507,12 @@ mod fee_config_events {
         let token = Address::generate(&env);
         let client = SASClient::new(&env, &sas);
         client.set_fee(&token, &25);
+        let before = env.events().all();
         env.set_auths(&[]);
         assert!(client.try_set_fee(&token, &50).is_err());
-        assert!(env.events().all().is_empty());
+        assert_eq!(env.events().all(), before);
         assert!(client.try_clear_fee().is_err());
-        assert!(env.events().all().is_empty());
+        assert_eq!(env.events().all(), before);
         assert_eq!(client.get_fee(), Some((token, 25)));
     }
 }
@@ -3586,8 +3535,8 @@ mod snapshot_tests {
 
     fn setup_sas_with_registry() -> (Env, Address, Address) {
         let env = Env::default();
-        let registry_id = env.register(mock1::MockRegistry, ());
-        let sas_id = env.register(SAS, ());
+        let registry_id = env.register_contract(None, mock1::MockRegistry);
+        let sas_id = env.register_contract(None, SAS);
         let admin = Address::generate(&env);
         env.mock_all_auths();
         SASClient::new(&env, &sas_id).init(&admin, &registry_id);

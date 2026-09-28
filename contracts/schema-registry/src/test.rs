@@ -13,7 +13,7 @@ use soroban_sdk::{symbol_short, Address, BytesN, Env, IntoVal, String};
 #[test]
 fn test_register_schema() {
     let env = Env::default();
-    let contract_id = env.register(SchemaRegistry, ());
+    let contract_id = env.register_contract(None, SchemaRegistry);
     let client = SchemaRegistryClient::new(&env, &contract_id);
 
     let owner = Address::generate(&env);
@@ -32,7 +32,7 @@ fn test_register_schema() {
 #[test]
 fn test_register_rejects_malformed_schema_strings() {
     let env = Env::default();
-    let contract_id = env.register(SchemaRegistry, ());
+    let contract_id = env.register_contract(None, SchemaRegistry);
     let client = SchemaRegistryClient::new(&env, &contract_id);
 
     let owner = Address::generate(&env);
@@ -53,7 +53,7 @@ fn test_register_rejects_malformed_schema_strings() {
 #[test]
 fn test_register_emits_schema_registered_event() {
     let env = Env::default();
-    let contract_id = env.register(SchemaRegistry, ());
+    let contract_id = env.register_contract(None, SchemaRegistry);
     let client = SchemaRegistryClient::new(&env, &contract_id);
 
     let owner = Address::generate(&env);
@@ -85,7 +85,7 @@ fn test_register_emits_schema_registered_event() {
 #[should_panic(expected = "Error(Contract, #2)")]
 fn test_duplicate_schema() {
     let env = Env::default();
-    let contract_id = env.register(SchemaRegistry, ());
+    let contract_id = env.register_contract(None, SchemaRegistry);
     let client = SchemaRegistryClient::new(&env, &contract_id);
 
     let schema_str = String::from_str(&env, "bool like_soroban");
@@ -104,7 +104,7 @@ fn test_duplicate_schema() {
 #[test]
 fn test_upgrade() {
     let env = Env::default();
-    let contract_id = env.register(SchemaRegistry, ());
+    let contract_id = env.register_contract(None, SchemaRegistry);
     let client = SchemaRegistryClient::new(&env, &contract_id);
 
     let admin = Address::generate(&env);
@@ -123,7 +123,7 @@ fn test_upgrade() {
 #[test]
 fn test_fee_and_treasury() {
     let env = Env::default();
-    let contract_id = env.register(SchemaRegistry, ());
+    let contract_id = env.register_contract(None, SchemaRegistry);
     let client = SchemaRegistryClient::new(&env, &contract_id);
 
     let admin = Address::generate(&env);
@@ -140,7 +140,7 @@ fn test_fee_and_treasury() {
 #[test]
 fn test_set_fee_emits_event_with_old_and_new_value() {
     let env = Env::default();
-    let contract_id = env.register(SchemaRegistry, ());
+    let contract_id = env.register_contract(None, SchemaRegistry);
     let client = SchemaRegistryClient::new(&env, &contract_id);
 
     let admin = Address::generate(&env);
@@ -195,7 +195,7 @@ fn test_set_fee_emits_event_with_old_and_new_value() {
 #[test]
 fn test_set_fee_requires_admin_auth() {
     let env = Env::default();
-    let contract_id = env.register(SchemaRegistry, ());
+    let contract_id = env.register_contract(None, SchemaRegistry);
     let client = SchemaRegistryClient::new(&env, &contract_id);
 
     let admin = Address::generate(&env);
@@ -211,7 +211,7 @@ fn test_set_fee_requires_admin_auth() {
 #[test]
 fn test_set_treasury_emits_event_with_old_and_new_value() {
     let env = Env::default();
-    let contract_id = env.register(SchemaRegistry, ());
+    let contract_id = env.register_contract(None, SchemaRegistry);
     let client = SchemaRegistryClient::new(&env, &contract_id);
 
     let admin = Address::generate(&env);
@@ -262,7 +262,7 @@ fn test_set_treasury_emits_event_with_old_and_new_value() {
 #[test]
 fn test_set_treasury_requires_admin_auth() {
     let env = Env::default();
-    let contract_id = env.register(SchemaRegistry, ());
+    let contract_id = env.register_contract(None, SchemaRegistry);
     let client = SchemaRegistryClient::new(&env, &contract_id);
 
     let admin = Address::generate(&env);
@@ -286,7 +286,7 @@ fn fee_test_env() -> (
     Address,
 ) {
     let env = Env::default();
-    let contract_id = env.register(SchemaRegistry, ());
+    let contract_id = env.register_contract(None, SchemaRegistry);
     let client = SchemaRegistryClient::new(&env, &contract_id);
 
     let admin = Address::generate(&env);
@@ -459,7 +459,7 @@ fn test_clear_fee_makes_registration_free_again() {
 #[test]
 fn test_get_version_defaults_to_one() {
     let env = Env::default();
-    let contract_id = env.register(SchemaRegistry, ());
+    let contract_id = env.register_contract(None, SchemaRegistry);
     let client = SchemaRegistryClient::new(&env, &contract_id);
 
     let admin = Address::generate(&env);
@@ -481,7 +481,7 @@ fn test_get_version_defaults_to_one() {
 #[test]
 fn test_upgrade_validation_rejects_invalid_candidates_without_mutation() {
     let env = Env::default();
-    let contract_id = env.register(SchemaRegistry, ());
+    let contract_id = env.register_contract(None, SchemaRegistry);
     let client = SchemaRegistryClient::new(&env, &contract_id);
 
     let admin = Address::generate(&env);
@@ -521,7 +521,7 @@ fn test_upgrade_validation_rejects_invalid_candidates_without_mutation() {
 #[test]
 fn test_upgrade_commit_emits_events_and_tracks_hash() {
     let env = Env::default();
-    let contract_id = env.register(SchemaRegistry, ());
+    let contract_id = env.register_contract(None, SchemaRegistry);
     let client = SchemaRegistryClient::new(&env, &contract_id);
 
     let admin = Address::generate(&env);
@@ -533,8 +533,12 @@ fn test_upgrade_commit_emits_events_and_tracks_hash() {
         commit_upgrade(&env, &admin, &new_hash, 2);
     });
 
-    // SDK v22 exposes events from the latest top-level invocation, so inspect
-    // the commit event before client/storage reads replace that view.
+    assert_eq!(client.get_version(), 2);
+    let tracked: Option<BytesN<32>> = env.as_contract(&contract_id, || {
+        env.storage().instance().get(&CURRENT_WASM_HASH)
+    });
+    assert_eq!(tracked, Some(new_hash.clone()));
+
     // The first upgrade has no prior tracked hash, so it reports the all-zero
     // "unknown" sentinel rather than a genesis hash it cannot read.
     let expected = ContractUpgradedEvent {
@@ -550,20 +554,15 @@ fn test_upgrade_commit_emits_events_and_tracks_hash() {
             (
                 contract_id.clone(),
                 (symbol_short!("UPGRADE"), 1u32, 2u32).into_val(&env),
-                (1u32, 2u32, new_hash.clone()).into_val(&env),
+                (1u32, 2u32, new_hash).into_val(&env),
             ),
             (
-                contract_id.clone(),
-                (symbol_short!("UPGRADED"), admin.clone()).into_val(&env),
+                contract_id,
+                (symbol_short!("UPGRADED"), admin).into_val(&env),
                 expected.into_val(&env),
             )
         ]
     );
-    assert_eq!(client.get_version(), 2);
-    let tracked: Option<BytesN<32>> = env.as_contract(&contract_id, || {
-        env.storage().instance().get(&CURRENT_WASM_HASH)
-    });
-    assert_eq!(tracked, Some(new_hash));
 }
 
 /// A later activation reports the hash it is replacing, so an off-chain
@@ -572,7 +571,7 @@ fn test_upgrade_commit_emits_events_and_tracks_hash() {
 #[test]
 fn test_upgrade_event_uses_a_previously_tracked_hash() {
     let env = Env::default();
-    let contract_id = env.register(SchemaRegistry, ());
+    let contract_id = env.register_contract(None, SchemaRegistry);
     let client = SchemaRegistryClient::new(&env, &contract_id);
 
     let admin = Address::generate(&env);
@@ -585,6 +584,8 @@ fn test_upgrade_event_uses_a_previously_tracked_hash() {
         env.storage().instance().set(&CURRENT_WASM_HASH, &old_hash);
         commit_upgrade(&env, &admin, &new_hash, 2);
     });
+
+    assert_eq!(client.get_version(), 2);
 
     let expected = ContractUpgradedEvent {
         old_wasm_hash: old_hash,
@@ -603,13 +604,12 @@ fn test_upgrade_event_uses_a_previously_tracked_hash() {
             )
         ]
     );
-    assert_eq!(client.get_version(), 2);
 }
 
 #[test]
 fn test_upgrade_requires_admin_auth() {
     let env = Env::default();
-    let contract_id = env.register(SchemaRegistry, ());
+    let contract_id = env.register_contract(None, SchemaRegistry);
     let client = SchemaRegistryClient::new(&env, &contract_id);
 
     let admin = Address::generate(&env);
@@ -630,7 +630,7 @@ fn test_upgrade_requires_admin_auth() {
 #[test]
 fn test_deprecate() {
     let env = Env::default();
-    let contract_id = env.register(SchemaRegistry, ());
+    let contract_id = env.register_contract(None, SchemaRegistry);
     let client = SchemaRegistryClient::new(&env, &contract_id);
 
     let admin = Address::generate(&env);
@@ -655,7 +655,7 @@ fn test_deprecate() {
 #[test]
 fn test_deprecate_emits_schema_deprecated_event_once() {
     let env = Env::default();
-    let contract_id = env.register(SchemaRegistry, ());
+    let contract_id = env.register_contract(None, SchemaRegistry);
     let client = SchemaRegistryClient::new(&env, &contract_id);
 
     let admin = Address::generate(&env);
@@ -687,14 +687,15 @@ fn test_deprecate_emits_schema_deprecated_event_once() {
     );
 
     // Repeat call is an idempotent no-op: no second SchemaDeprecated event.
+    let event_count_before = env.events().all().len();
     client.deprecate(&uid, &owner);
-    assert!(env.events().all().is_empty());
+    assert_eq!(env.events().all().len(), event_count_before);
 }
 
 #[test]
 fn test_deprecate_by_admin() {
     let env = Env::default();
-    let contract_id = env.register(SchemaRegistry, ());
+    let contract_id = env.register_contract(None, SchemaRegistry);
     let client = SchemaRegistryClient::new(&env, &contract_id);
 
     let admin = Address::generate(&env);
@@ -713,7 +714,7 @@ fn test_deprecate_by_admin() {
 #[test]
 fn test_deprecate_rejects_unrelated_authorizer() {
     let env = Env::default();
-    let contract_id = env.register(SchemaRegistry, ());
+    let contract_id = env.register_contract(None, SchemaRegistry);
     let client = SchemaRegistryClient::new(&env, &contract_id);
 
     let admin = Address::generate(&env);
@@ -736,7 +737,7 @@ fn test_deprecate_rejects_unrelated_authorizer() {
 #[test]
 fn test_validate_schema() {
     let env = Env::default();
-    let contract_id = env.register(SchemaRegistry, ());
+    let contract_id = env.register_contract(None, SchemaRegistry);
     let client = SchemaRegistryClient::new(&env, &contract_id);
 
     let admin = Address::generate(&env);
@@ -757,7 +758,7 @@ fn test_validate_schema() {
 #[test]
 fn test_init_twice_is_rejected() {
     let env = Env::default();
-    let contract_id = env.register(SchemaRegistry, ());
+    let contract_id = env.register_contract(None, SchemaRegistry);
     let client = SchemaRegistryClient::new(&env, &contract_id);
 
     let admin = Address::generate(&env);
@@ -780,7 +781,7 @@ fn test_init_twice_is_rejected() {
 #[test]
 fn test_instance_configuration_survives_long_after_init() {
     let env = Env::default();
-    let contract_id = env.register(SchemaRegistry, ());
+    let contract_id = env.register_contract(None, SchemaRegistry);
     let client = SchemaRegistryClient::new(&env, &contract_id);
 
     let admin = Address::generate(&env);
@@ -809,7 +810,7 @@ fn test_instance_configuration_survives_long_after_init() {
 #[test]
 fn test_ordinary_traffic_renews_decayed_instance_ttl() {
     let env = Env::default();
-    let contract_id = env.register(SchemaRegistry, ());
+    let contract_id = env.register_contract(None, SchemaRegistry);
     let client = SchemaRegistryClient::new(&env, &contract_id);
 
     let admin = Address::generate(&env);
@@ -843,7 +844,7 @@ fn test_ordinary_traffic_renews_decayed_instance_ttl() {
 #[test]
 fn test_get_schemas_overflow_deterministic() {
     let env = Env::default();
-    let contract_id = env.register(SchemaRegistry, ());
+    let contract_id = env.register_contract(None, SchemaRegistry);
     let client = SchemaRegistryClient::new(&env, &contract_id);
     env.mock_all_auths();
     // Empty registry: start = u32::MAX with large limit must not trap and returns empty
@@ -875,7 +876,7 @@ fn test_get_schemas_overflow_deterministic() {
 #[test]
 fn test_get_schemas_pagination_boundaries() {
     let env = Env::default();
-    let contract_id = env.register(SchemaRegistry, ());
+    let contract_id = env.register_contract(None, SchemaRegistry);
     let client = SchemaRegistryClient::new(&env, &contract_id);
     env.mock_all_auths();
     let owner = Address::generate(&env);
@@ -909,7 +910,7 @@ fn test_get_schemas_pagination_boundaries() {
 #[test]
 fn test_get_schemas_page_size_capped_to_budget() {
     let env = Env::default();
-    let contract_id = env.register(SchemaRegistry, ());
+    let contract_id = env.register_contract(None, SchemaRegistry);
     let client = SchemaRegistryClient::new(&env, &contract_id);
     env.mock_all_auths();
     let owner = Address::generate(&env);
@@ -935,7 +936,7 @@ fn test_get_schemas_page_size_capped_to_budget() {
 #[test]
 fn test_register_same_schema_different_policy_distinct_uids() {
     let env = Env::default();
-    let contract_id = env.register(SchemaRegistry, ());
+    let contract_id = env.register_contract(None, SchemaRegistry);
     let client = SchemaRegistryClient::new(&env, &contract_id);
     env.mock_all_auths();
     let owner = Address::generate(&env);
@@ -972,7 +973,7 @@ fn test_register_same_schema_different_policy_distinct_uids() {
 fn test_uid_derivation_is_deterministic_and_includes_policy() {
     use soroban_sdk::{xdr::ToXdr, Bytes, BytesN};
     let env = Env::default();
-    let contract_id = env.register(SchemaRegistry, ());
+    let contract_id = env.register_contract(None, SchemaRegistry);
     let client = SchemaRegistryClient::new(&env, &contract_id);
     env.mock_all_auths();
     let owner = Address::generate(&env);
@@ -1010,7 +1011,7 @@ fn test_uid_derivation_is_deterministic_and_includes_policy() {
 fn test_uid_golden_vectors() {
     use soroban_sdk::{xdr::ToXdr, Bytes, BytesN};
     let env = Env::default();
-    let contract_id = env.register(SchemaRegistry, ());
+    let contract_id = env.register_contract(None, SchemaRegistry);
     let client = SchemaRegistryClient::new(&env, &contract_id);
     env.mock_all_auths();
     let owner = Address::generate(&env);
@@ -1051,7 +1052,7 @@ fn test_uid_golden_vectors() {
 #[test]
 fn test_add_and_remove_delegate() {
     let env = Env::default();
-    let contract_id = env.register(SchemaRegistry, ());
+    let contract_id = env.register_contract(None, SchemaRegistry);
     let client = SchemaRegistryClient::new(&env, &contract_id);
 
     let owner = Address::generate(&env);
@@ -1074,7 +1075,12 @@ fn test_add_and_remove_delegate() {
     // Owner adds delegate
     client.add_delegate(&uid, &delegate);
 
-    // Verify SchemaDelegateAdded event before subsequent v22 client reads.
+    assert!(client.is_delegate(&uid, &delegate));
+    assert!(client.is_authorized(&uid, &delegate));
+    assert!(client.is_authorized(&uid, &owner));
+    assert!(!client.is_authorized(&uid, &unrelated));
+
+    // Verify SchemaDelegateAdded event was emitted
     let events = env.events().all();
     let expected_event = SchemaDelegateAddedEvent {
         schema_uid: uid.clone(),
@@ -1092,13 +1098,15 @@ fn test_add_and_remove_delegate() {
             )
         ]
     );
-    assert!(client.is_delegate(&uid, &delegate));
-    assert!(client.is_authorized(&uid, &delegate));
-    assert!(client.is_authorized(&uid, &owner));
-    assert!(!client.is_authorized(&uid, &unrelated));
 
-    // Owner removes delegate and inspect its event before subsequent reads.
+    // Owner removes delegate
     client.remove_delegate(&uid, &delegate);
+
+    assert!(!client.is_delegate(&uid, &delegate));
+    assert!(!client.is_authorized(&uid, &delegate));
+    assert!(client.is_authorized(&uid, &owner));
+
+    // Verify SchemaDelegateRemoved event was emitted
     let events_after = env.events().all();
     let expected_removed_event = SchemaDelegateRemovedEvent {
         schema_uid: uid.clone(),
@@ -1116,15 +1124,12 @@ fn test_add_and_remove_delegate() {
             )
         ]
     );
-    assert!(!client.is_delegate(&uid, &delegate));
-    assert!(!client.is_authorized(&uid, &delegate));
-    assert!(client.is_authorized(&uid, &owner));
 }
 
 #[test]
 fn test_multiple_delegates_allowlist() {
     let env = Env::default();
-    let contract_id = env.register(SchemaRegistry, ());
+    let contract_id = env.register_contract(None, SchemaRegistry);
     let client = SchemaRegistryClient::new(&env, &contract_id);
 
     let owner = Address::generate(&env);
@@ -1156,7 +1161,7 @@ fn test_multiple_delegates_allowlist() {
 #[test]
 fn test_delegate_endpoints_reject_unknown_schema() {
     let env = Env::default();
-    let contract_id = env.register(SchemaRegistry, ());
+    let contract_id = env.register_contract(None, SchemaRegistry);
     let client = SchemaRegistryClient::new(&env, &contract_id);
 
     let delegate = Address::generate(&env);
@@ -1184,7 +1189,7 @@ fn test_delegate_endpoints_reject_unknown_schema() {
 #[test]
 fn test_deprecated_schema_revokes_authorization() {
     let env = Env::default();
-    let contract_id = env.register(SchemaRegistry, ());
+    let contract_id = env.register_contract(None, SchemaRegistry);
     let client = SchemaRegistryClient::new(&env, &contract_id);
 
     let admin = Address::generate(&env);
@@ -1213,7 +1218,7 @@ fn test_deprecated_schema_revokes_authorization() {
 #[test]
 fn test_transfer_schema_ownership_success() {
     let env = Env::default();
-    let contract_id = env.register(SchemaRegistry, ());
+    let contract_id = env.register_contract(None, SchemaRegistry);
     let client = SchemaRegistryClient::new(&env, &contract_id);
 
     let owner = Address::generate(&env);
@@ -1227,8 +1232,9 @@ fn test_transfer_schema_ownership_success() {
 
     // Transfer ownership
     client.transfer_schema_ownership(&uid, &new_owner);
+    assert_eq!(client.get_creator(&uid), Some(new_owner.clone()));
 
-    // Verify SchemaOwnershipTransferred event before the v22 client read.
+    // Verify SchemaOwnershipTransferred event was emitted
     let events = env.events().all();
     let expected = SchemaOwnershipTransferredEvent {
         schema_uid: uid.clone(),
@@ -1246,13 +1252,12 @@ fn test_transfer_schema_ownership_success() {
             )
         ]
     );
-    assert_eq!(client.get_creator(&uid), Some(new_owner));
 }
 
 #[test]
 fn test_transfer_schema_ownership_new_owner_can_deprecate_old_cannot() {
     let env = Env::default();
-    let contract_id = env.register(SchemaRegistry, ());
+    let contract_id = env.register_contract(None, SchemaRegistry);
     let client = SchemaRegistryClient::new(&env, &contract_id);
 
     let admin = Address::generate(&env);
@@ -1283,7 +1288,7 @@ fn test_transfer_schema_ownership_new_owner_can_deprecate_old_cannot() {
 #[test]
 fn test_transfer_schema_ownership_unauthorized_caller() {
     let env = Env::default();
-    let contract_id = env.register(SchemaRegistry, ());
+    let contract_id = env.register_contract(None, SchemaRegistry);
     let client = SchemaRegistryClient::new(&env, &contract_id);
 
     let owner = Address::generate(&env);
@@ -1303,7 +1308,7 @@ fn test_transfer_schema_ownership_unauthorized_caller() {
 #[test]
 fn test_transfer_schema_ownership_non_existent_schema() {
     let env = Env::default();
-    let contract_id = env.register(SchemaRegistry, ());
+    let contract_id = env.register_contract(None, SchemaRegistry);
     let client = SchemaRegistryClient::new(&env, &contract_id);
 
     let new_owner = Address::generate(&env);
@@ -1320,7 +1325,7 @@ fn test_transfer_schema_ownership_non_existent_schema() {
 #[test]
 fn test_transfer_schema_ownership_deprecated_schema_rejected() {
     let env = Env::default();
-    let contract_id = env.register(SchemaRegistry, ());
+    let contract_id = env.register_contract(None, SchemaRegistry);
     let client = SchemaRegistryClient::new(&env, &contract_id);
 
     let admin = Address::generate(&env);
@@ -1350,7 +1355,7 @@ mod snapshot_tests {
 
     fn setup() -> (Env, Address) {
         let env = Env::default();
-        let contract_id = env.register(SchemaRegistry, ());
+        let contract_id = env.register_contract(None, SchemaRegistry);
         (env, contract_id)
     }
 
@@ -1463,31 +1468,4 @@ mod snapshot_tests {
         // Note: This test may be in SAS contract test suite
         // Snapshot path: test_snapshots/AttesterKeyRecord.xdr
     }
-}
-
-#[test]
-fn test_shared_pause_trait_blocks_registry_mutations_and_keeps_reads_available() {
-    let env = Env::default();
-    let contract_id = env.register(SchemaRegistry, ());
-    let client = SchemaRegistryClient::new(&env, &contract_id);
-    let admin = Address::generate(&env);
-    let owner = Address::generate(&env);
-    let resolver = Address::generate(&env);
-    let schema = String::from_str(&env, "bool emergency_stop");
-
-    env.mock_all_auths();
-    client.init(&admin);
-    client.pause();
-    assert!(client.is_paused());
-    assert_eq!(client.get_version(), 1);
-
-    assert_eq!(
-        client.try_register(&owner, &schema, &resolver, &true),
-        Err(Ok(soroban_sas_common::SASError::ContractPaused.into()))
-    );
-
-    client.unpause();
-    assert!(!client.is_paused());
-    let uid = client.register(&owner, &schema, &resolver, &true);
-    assert!(client.get_schema(&uid).is_some());
 }

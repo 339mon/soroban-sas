@@ -57,12 +57,14 @@ fuzz_target!(|data: &[u8]| {
         numbers[index] = FieldValue::from_u64(u64::from(*byte));
     }
 
-    let person_values = [
-        FieldValue::Dynamic(name_preimage),
-        FieldValue::Word([seed; 32]),
-    ];
     let values = [
-        FieldValue::Struct("Person", &person_values),
+        FieldValue::Struct(
+            "Person",
+            &[
+                FieldValue::Dynamic(name_preimage),
+                FieldValue::Word([seed; 32]),
+            ],
+        ),
         FieldValue::List(&FieldType::Uint(64), &numbers),
         FieldValue::Dynamic(rest),
     ];

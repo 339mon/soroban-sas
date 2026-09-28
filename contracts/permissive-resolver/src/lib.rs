@@ -56,7 +56,7 @@ mod test {
     #[test]
     fn on_attest_and_on_revoke_accept_any_attestation() {
         let env = Env::default();
-        let contract_id = env.register(PermissiveResolver, ());
+        let contract_id = env.register_contract(None, PermissiveResolver);
         let client = PermissiveResolverClient::new(&env, &contract_id);
         let attestation = sample_attestation(&env);
 

@@ -5,8 +5,8 @@
 extern crate alloc;
 
 use soroban_sas_common::{
-    Attestation, ContractUpgradedEvent, DelegationNonceKey, Pausable, SASError,
-    LEDGERS_IN_ONE_YEAR, MAX_ATTESTATION_DATA_BYTES, UID,
+    Attestation, ContractUpgradedEvent, DelegationNonceKey, SASError, LEDGERS_IN_ONE_YEAR,
+    MAX_ATTESTATION_DATA_BYTES, UID,
 };
 use soroban_sdk::{
     contract, contractimpl, panic_with_error, symbol_short, token, Address, BytesN, Env, IntoVal,
@@ -19,8 +19,6 @@ mod events;
 
 #[contract]
 pub struct SAS;
-
-impl Pausable for SAS {}
 
 pub const SAS_ADMIN: Symbol = symbol_short!("ADMIN");
 pub const PENDING_ADMIN: Symbol = symbol_short!("PEND_ADM");
@@ -46,6 +44,8 @@ pub const DELEGATION_NONCE: Symbol = symbol_short!("DELNONCE");
 pub const SAS_VERSION: Symbol = symbol_short!("VERSION");
 /// Hash targeted by the most recent successful upgrade invocation.
 pub const CURRENT_WASM_HASH: Symbol = symbol_short!("WASMHASH");
+/// Emergency pause flag. When `true`, write operations are blocked (#255).
+pub const PAUSED: Symbol = symbol_short!("PAUSED");
 /// Highest version whose upgrade path this build knows and has been audited
 /// to activate. Increase only as part of a reviewed release.
 pub const MAX_KNOWN_VERSION: u32 = 2;
@@ -87,67 +87,6 @@ fn require_registry(env: &Env) -> Address {
     match env.storage().instance().get(&SCHEMA_REGISTRY) {
         Some(registry) => registry,
         None => panic_with_error!(env, SASError::NotInitialized),
-    }
-}
-
-/// Reads schema state across the registry trust boundary without allowing an
-/// untyped host trap to escape into the SAS public API. A missing schema is a
-/// legitimate `Ok(None)`; transport errors, traps, and incompatible return
-/// values are dependency failures.
-fn registry_get_schema(
-    env: &Env,
-    registry: &Address,
-    schema_uid: &UID,
-) -> Result<Option<soroban_sas_common::SchemaRecord>, SASError> {
-    match env.try_invoke_contract::<Option<soroban_sas_common::SchemaRecord>, soroban_sdk::Error>(
-        registry,
-        &Symbol::new(env, "get_schema"),
-        soroban_sdk::vec![env, schema_uid.clone().into_val(env)],
-    ) {
-        Ok(Ok(schema)) => Ok(schema),
-        _ => Err(SASError::IncompatibleDependency),
-    }
-}
-
-/// Distinguishes a real authorization denial from a broken or incompatible
-/// registry call. Callers can therefore fail closed without misreporting a
-/// dependency outage as an authorization decision.
-fn registry_is_authorized(
-    env: &Env,
-    registry: &Address,
-    schema_uid: &UID,
-    authorizer: &Address,
-) -> Result<bool, SASError> {
-    match env.try_invoke_contract::<bool, soroban_sdk::Error>(
-        registry,
-        &Symbol::new(env, "is_authorized"),
-        soroban_sdk::vec![
-            env,
-            schema_uid.clone().into_val(env),
-            authorizer.clone().into_val(env),
-        ],
-    ) {
-        Ok(Ok(authorized)) => Ok(authorized),
-        _ => Err(SASError::IncompatibleDependency),
-    }
-}
-
-/// Runs an authoritative resolver callback. Soroban's `try_invoke_contract`
-/// is nested: only `Ok(Ok(()))` is acceptance. Both invocation failures and
-/// contract-level errors reject atomically.
-fn require_resolver_acceptance(
-    env: &Env,
-    resolver: &Address,
-    callback: &Symbol,
-    attestation: &Attestation,
-) -> Result<(), SASError> {
-    match env.try_invoke_contract::<(), soroban_sdk::Error>(
-        resolver,
-        callback,
-        soroban_sdk::vec![env, attestation.clone().into_val(env)],
-    ) {
-        Ok(Ok(())) => Ok(()),
-        _ => Err(SASError::ResolverRejected),
     }
 }
 
@@ -371,8 +310,9 @@ impl SAS {
         extend_instance_ttl(&env);
         let admin = require_admin(&env);
         admin.require_auth();
-        <Self as Pausable>::set_paused(&env, &admin);
+        env.storage().instance().set(&PAUSED, &true);
         extend_instance_ttl(&env);
+        events::publish_contract_paused(&env, admin);
     }
 
     /// Emergency unpause: resumes write operations after a `pause` (#255).
@@ -381,15 +321,16 @@ impl SAS {
         extend_instance_ttl(&env);
         let admin = require_admin(&env);
         admin.require_auth();
-        <Self as Pausable>::set_unpaused(&env, &admin);
+        env.storage().instance().set(&PAUSED, &false);
         extend_instance_ttl(&env);
+        events::publish_contract_unpaused(&env, admin);
     }
 
     /// Public read: returns whether the contract is currently paused (#255).
     /// Read-only entry points remain active even when paused.
     pub fn is_paused(env: Env) -> bool {
         extend_instance_ttl(&env);
-        <Self as Pausable>::is_paused(&env)
+        is_paused_status(&env)
     }
 
     /// Returns the bound indexer, if one has been configured.
@@ -491,7 +432,7 @@ impl SAS {
     }
 
     pub fn attest(env: Env, attestation: Attestation) -> UID {
-        if <Self as Pausable>::is_paused(&env) {
+        if is_paused_status(&env) {
             panic_with_error!(&env, SASError::ContractPaused);
         }
         attestation.attester.require_auth();
@@ -505,7 +446,7 @@ impl SAS {
         signature: soroban_sdk::BytesN<64>,
         public_key: soroban_sdk::BytesN<32>,
     ) -> UID {
-        if <Self as Pausable>::is_paused(&env) {
+        if is_paused_status(&env) {
             panic_with_error!(&env, SASError::ContractPaused);
         }
         if attestation.revocation_time != 0 {
@@ -585,24 +526,28 @@ impl SAS {
             panic_with_error!(&env, SASError::InvalidRefUid);
         }
 
-        let schema_opt = match registry_get_schema(&env, &registry, &attestation.schema_uid) {
-            Ok(schema) => schema,
-            Err(error) => panic_with_error!(&env, error),
-        };
+        let schema_opt: Option<soroban_sas_common::SchemaRecord> = env.invoke_contract(
+            &registry,
+            &Symbol::new(&env, "get_schema"),
+            soroban_sdk::vec![&env, attestation.schema_uid.clone().into_val(&env)],
+        );
         let Some(schema) = schema_opt else {
             panic_with_error!(&env, SASError::InvalidSchema);
         };
 
-        // Verify attester authorization: a clean `false` is Unauthorized; a
-        // broken registry dependency remains distinguishable and fails closed.
-        let is_auth = match registry_is_authorized(
-            &env,
+        // Verify attester authorization: attester must be either the original
+        // schema owner or an authorized delegate in the registry allow-list (#7).
+        let is_auth: bool = match env.try_invoke_contract::<bool, soroban_sdk::Error>(
             &registry,
-            &attestation.schema_uid,
-            &attestation.attester,
+            &Symbol::new(&env, "is_authorized"),
+            soroban_sdk::vec![
+                &env,
+                attestation.schema_uid.clone().into_val(&env),
+                attestation.attester.clone().into_val(&env),
+            ],
         ) {
-            Ok(authorized) => authorized,
-            Err(error) => panic_with_error!(&env, error),
+            Ok(Ok(auth)) => auth,
+            _ => false,
         };
         if !is_auth {
             panic_with_error!(&env, SASError::Unauthorized);
@@ -628,13 +573,15 @@ impl SAS {
         // call would otherwise have published, so the typed error is the
         // only (and sufficient) observable signal here — there is no
         // partial-effect window to additionally report on.
-        if let Err(error) = require_resolver_acceptance(
-            &env,
-            &schema.resolver,
-            &Symbol::new(&env, "on_attest"),
-            &attestation,
-        ) {
-            panic_with_error!(&env, error);
+        if env
+            .try_invoke_contract::<(), soroban_sdk::Error>(
+                &schema.resolver,
+                &Symbol::new(&env, "on_attest"),
+                soroban_sdk::vec![&env, attestation.clone().into_val(&env)],
+            )
+            .is_err()
+        {
+            panic_with_error!(&env, SASError::ResolverRejected);
         }
 
         // Normalize the issuance timestamp to the authoritative ledger close
@@ -715,41 +662,6 @@ impl SAS {
         events::publish_index_failed(env, &attestation.uid);
     }
 
-    /// Replays one canonical SAS record into the Indexer. Current indexers
-    /// accept `index_attestation_at` so recovery preserves the original
-    /// issuance timestamp used by date-range queries. A legacy fallback keeps
-    /// recovery compatible with indexers deployed before that entry point.
-    fn try_replay_indexer(env: &Env, indexer: &Address, attestation: &Attestation) -> bool {
-        let timestamped = env.try_invoke_contract::<(), soroban_sdk::Error>(
-            indexer,
-            &Symbol::new(env, "index_attestation_at"),
-            soroban_sdk::vec![
-                env,
-                attestation.uid.clone().into_val(env),
-                attestation.recipient.clone().into_val(env),
-                attestation.schema_uid.clone().into_val(env),
-                attestation.attester.clone().into_val(env),
-                attestation.time.into_val(env),
-            ],
-        );
-        if matches!(timestamped, Ok(Ok(()))) {
-            return true;
-        }
-
-        let legacy = env.try_invoke_contract::<(), soroban_sdk::Error>(
-            indexer,
-            &Symbol::new(env, "index_attestation"),
-            soroban_sdk::vec![
-                env,
-                attestation.uid.clone().into_val(env),
-                attestation.recipient.clone().into_val(env),
-                attestation.schema_uid.clone().into_val(env),
-                attestation.attester.clone().into_val(env),
-            ],
-        );
-        matches!(legacy, Ok(Ok(())))
-    }
-
     /// Admin: choose the Indexer availability policy (#161).
     ///
     /// `false` (default) is fail-open: a failed Indexer push is tolerated and
@@ -793,7 +705,7 @@ impl SAS {
 
     pub fn bulk_reindex(env: Env, uids: soroban_sdk::Vec<UID>) -> soroban_sdk::Vec<UID> {
         extend_instance_ttl(&env);
-        if uids.len() > MAX_MULTI_ATTEST {
+        if uids.len() > 100 {
             panic_with_error!(&env, SASError::BatchTooLarge);
         }
 
@@ -809,14 +721,13 @@ impl SAS {
                     &soroban_sdk::Symbol::new(&env, "index_attestation"),
                     soroban_sdk::vec![&env, attestation.into_val(&env)],
                 );
-                if matches!(outcome, Ok(Ok(()))) {
+                if outcome.is_err() {
+                    failed.push_back(uid);
+                } else {
                     env.events()
                         .publish((soroban_sas_common::events::REINDEXED, uid), ());
-                } else {
-                    failed.push_back(uid);
                 }
             } else {
-                events::publish_index_failed(&env, &uid);
                 failed.push_back(uid);
             }
         }
@@ -831,14 +742,25 @@ impl SAS {
         let Some(indexer) = env.storage().instance().get::<_, Address>(&INDEXER) else {
             panic_with_error!(&env, SASError::NotInitialized);
         };
-        if !Self::try_replay_indexer(&env, &indexer, &attestation) {
+        let outcome = env.try_invoke_contract::<(), soroban_sdk::Error>(
+            &indexer,
+            &Symbol::new(&env, "index_attestation"),
+            soroban_sdk::vec![
+                &env,
+                attestation.uid.clone().into_val(&env),
+                attestation.recipient.clone().into_val(&env),
+                attestation.schema_uid.clone().into_val(&env),
+                attestation.attester.clone().into_val(&env),
+            ],
+        );
+        if !matches!(outcome, Ok(Ok(()))) {
             panic_with_error!(&env, SASError::IndexerUnavailable);
         }
         events::publish_reindexed(&env, &uid);
     }
 
     pub fn revoke(env: Env, uid: UID) {
-        if <Self as Pausable>::is_paused(&env) {
+        if is_paused_status(&env) {
             panic_with_error!(&env, SASError::ContractPaused);
         }
         let Some(attestation) = env.storage().persistent().get::<_, Attestation>(&uid) else {
@@ -852,7 +774,7 @@ impl SAS {
     /// `authorizer` must either be the original attester, or an authorized
     /// delegate / primary owner of the schema recorded in the registry (#7).
     pub fn revoke_by_authorizer(env: Env, uid: UID, authorizer: Address) {
-        if <Self as Pausable>::is_paused(&env) {
+        if is_paused_status(&env) {
             panic_with_error!(&env, SASError::ContractPaused);
         }
         let Some(attestation) = env.storage().persistent().get::<_, Attestation>(&uid) else {
@@ -861,12 +783,18 @@ impl SAS {
         authorizer.require_auth();
         if authorizer != attestation.attester {
             let registry = require_registry(&env);
-            let is_auth =
-                match registry_is_authorized(&env, &registry, &attestation.schema_uid, &authorizer)
-                {
-                    Ok(authorized) => authorized,
-                    Err(error) => panic_with_error!(&env, error),
-                };
+            let is_auth: bool = match env.try_invoke_contract::<bool, soroban_sdk::Error>(
+                &registry,
+                &Symbol::new(&env, "is_authorized"),
+                soroban_sdk::vec![
+                    &env,
+                    attestation.schema_uid.clone().into_val(&env),
+                    authorizer.clone().into_val(&env),
+                ],
+            ) {
+                Ok(Ok(auth)) => auth,
+                _ => false,
+            };
             if !is_auth {
                 panic_with_error!(&env, SASError::Unauthorized);
             }
@@ -876,7 +804,7 @@ impl SAS {
 
     /// Convenience alias for `revoke_by_authorizer` using a delegate address (#7).
     pub fn revoke_by_delegate(env: Env, uid: UID, delegate: Address) {
-        if <Self as Pausable>::is_paused(&env) {
+        if is_paused_status(&env) {
             panic_with_error!(&env, SASError::ContractPaused);
         }
         Self::revoke_by_authorizer(env, uid, delegate);
@@ -889,7 +817,7 @@ impl SAS {
         signature: soroban_sdk::BytesN<64>,
         public_key: soroban_sdk::BytesN<32>,
     ) {
-        if <Self as Pausable>::is_paused(&env) {
+        if is_paused_status(&env) {
             panic_with_error!(&env, SASError::ContractPaused);
         }
         let Some(attestation) = env.storage().persistent().get::<_, Attestation>(&uid) else {
@@ -947,20 +875,23 @@ impl SAS {
         // unaffected and a rejected revocation leaves the attestation
         // exactly as it was.
         let registry = require_registry(&env);
-        let schema_opt = match registry_get_schema(&env, &registry, &attestation.schema_uid) {
-            Ok(schema) => schema,
-            Err(error) => panic_with_error!(&env, error),
-        };
+        let schema_opt: Option<soroban_sas_common::SchemaRecord> = env.invoke_contract(
+            &registry,
+            &Symbol::new(&env, "get_schema"),
+            soroban_sdk::vec![&env, attestation.schema_uid.clone().into_val(&env)],
+        );
         let Some(schema) = schema_opt else {
             panic_with_error!(&env, SASError::InvalidSchema);
         };
-        if let Err(error) = require_resolver_acceptance(
-            &env,
-            &schema.resolver,
-            &Symbol::new(&env, "on_revoke"),
-            &attestation,
-        ) {
-            panic_with_error!(&env, error);
+        if env
+            .try_invoke_contract::<(), soroban_sdk::Error>(
+                &schema.resolver,
+                &Symbol::new(&env, "on_revoke"),
+                soroban_sdk::vec![&env, attestation.clone().into_val(&env)],
+            )
+            .is_err()
+        {
+            panic_with_error!(&env, SASError::ResolverRejected);
         }
 
         // Notify indexer if bound, so revoked status is observable via
@@ -993,7 +924,7 @@ impl SAS {
     /// Replacing with `expiration_time == 0` (perpetual) is always allowed.
     /// See `docs/attestations.md` and `specs/protocol-v1.md` (#252).
     pub fn replace_attestation(env: Env, old_uid: UID, new_data: Attestation) -> UID {
-        if <Self as Pausable>::is_paused(&env) {
+        if is_paused_status(&env) {
             panic_with_error!(&env, SASError::ContractPaused);
         }
         extend_instance_ttl(&env);
@@ -1052,7 +983,7 @@ impl SAS {
         env: Env,
         attestations: soroban_sdk::Vec<Attestation>,
     ) -> soroban_sdk::Vec<UID> {
-        if <Self as Pausable>::is_paused(&env) {
+        if is_paused_status(&env) {
             panic_with_error!(&env, SASError::ContractPaused);
         }
         extend_instance_ttl(&env);
@@ -1103,7 +1034,7 @@ impl SAS {
         token: Address,
         value: i128,
     ) -> UID {
-        if <Self as Pausable>::is_paused(&env) {
+        if is_paused_status(&env) {
             panic_with_error!(&env, SASError::ContractPaused);
         }
         extend_instance_ttl(&env);
@@ -1148,7 +1079,7 @@ impl SAS {
     /// dedup, like `multi_attest`), and the actual state mutations go
     /// through `revoke_internal` so storage-read/auth work is not repeated.
     pub fn multi_revoke(env: Env, uids: soroban_sdk::Vec<UID>) {
-        if <Self as Pausable>::is_paused(&env) {
+        if is_paused_status(&env) {
             panic_with_error!(&env, SASError::ContractPaused);
         }
         extend_instance_ttl(&env);
@@ -1213,7 +1144,7 @@ impl SAS {
     /// Re-registering after a revocation is allowed and starts a new
     /// version.
     pub fn register_attester_key(env: Env, attester: Address, public_key: soroban_sdk::BytesN<32>) {
-        if <Self as Pausable>::is_paused(&env) {
+        if is_paused_status(&env) {
             panic_with_error!(&env, SASError::ContractPaused);
         }
         extend_instance_ttl(&env);
@@ -1268,7 +1199,7 @@ impl SAS {
         attester: Address,
         new_public_key: soroban_sdk::BytesN<32>,
     ) {
-        if <Self as Pausable>::is_paused(&env) {
+        if is_paused_status(&env) {
             panic_with_error!(&env, SASError::ContractPaused);
         }
         attester.require_auth();
@@ -1324,7 +1255,7 @@ impl SAS {
     /// so a future `register_attester_key` call continues the version
     /// sequence instead of restarting at `1`.
     pub fn revoke_attester_key(env: Env, attester: Address) {
-        if <Self as Pausable>::is_paused(&env) {
+        if is_paused_status(&env) {
             panic_with_error!(&env, SASError::ContractPaused);
         }
         attester.require_auth();
@@ -1441,10 +1372,11 @@ impl SAS {
         // Deprecated schemas invalidate previously signed payloads as well,
         // not just new issuance; see doc comment above.
         let registry = require_registry(&env);
-        let schema_opt = match registry_get_schema(&env, &registry, &attestation.schema_uid) {
-            Ok(schema) => schema,
-            Err(error) => panic_with_error!(&env, error),
-        };
+        let schema_opt: Option<soroban_sas_common::SchemaRecord> = env.invoke_contract(
+            &registry,
+            &Symbol::new(&env, "get_schema"),
+            soroban_sdk::vec![&env, attestation.schema_uid.clone().into_val(&env)],
+        );
         if schema_opt.is_none() {
             panic_with_error!(&env, SASError::InvalidSchema);
         }

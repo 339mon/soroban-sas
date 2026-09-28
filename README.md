@@ -66,16 +66,11 @@ The workspace has evolved beyond initial mocks and now includes comprehensive do
   **Duties**:
   - Maintains mappings from recipient addresses to their respective attestations.
   - Maintains mappings from schemas to all associated attestations.
-  - Supports paginated recipient/schema/attester queries with lifecycle and
-    inclusive issuance-time filters through `IndexQueryFilter`.
-  - Supports fail-open reconciliation with timestamp-preserving single and
-    bulk reindexing.
 
 ### Rust Packages
 
 - `packages/soroban-sas-common`
-  Contains shared definitions, error types, constants, validation utilities,
-  and the reusable `Pausable` emergency-stop trait used by all three contracts.
+  Contains shared definitions, error types, constants, and validation utilities utilized across the smart contract suite.
 
 - `packages/soroban-sas-sdk`
   A streamlined Rust Software Development Kit designed to facilitate future integrations with wallets and decentralized applications.

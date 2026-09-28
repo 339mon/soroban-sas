@@ -58,7 +58,7 @@ impl MockRegistry {
     }
 
     #[allow(non_snake_case)]
-    pub fn sasreg(_env: Env) -> bool {
+    pub fn SASREG(_env: Env) -> bool {
         true
     }
 
@@ -196,11 +196,11 @@ impl Harness {
         // The generated sweeps run hundreds of host calls through one Env, so
         // the default per-test CPU/memory budget is not the property under
         // test here; lift it and keep every other host check intact.
-        env.cost_estimate().budget().reset_unlimited();
+        env.budget().reset_unlimited();
         env.ledger().with_mut(|li| li.timestamp = GENESIS_TIME);
 
-        let registry_id = env.register(MockRegistry, ());
-        let sas_id = env.register(SAS, ());
+        let registry_id = env.register_contract(None, MockRegistry);
+        let sas_id = env.register_contract(None, SAS);
         let client = SASClient::new(&env, &sas_id);
         let admin = Address::generate(&env);
         env.mock_all_auths();

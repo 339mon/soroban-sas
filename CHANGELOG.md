@@ -15,15 +15,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 | Indexer | `soroban_sas_indexer.wasm` | `TBD` |
 
 ### Added
-- Shared `Pausable` contract behavior now standardizes emergency stops across
-  SAS, Schema Registry, and Indexer. Admin-authenticated pause/unpause calls
-  emit the existing standardized events; business writes fail with
-  `SASError::ContractPaused` while reads, upgrades, and recovery controls stay
-  available. (#319)
-- Indexer `query_recipient`, `query_schema`, and `query_attester` support
-  composable inclusive issuance-time ranges, lifecycle filtering, bounded page
-  sizes, and resumable raw-history cursors. Timestamp metadata is preserved by
-  current indexing and reconciliation paths. (#311)
 - Revocability semantics coverage: delegated, batch, and paid issuance now
   each have an acceptance test for `revocable = true` under a revocable
   schema (rejection was already covered on every issuance path),
@@ -106,10 +97,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `LEDGERS_IN_ONE_YEAR` common constant for persistent storage TTL bumps.
 
 ### Changed
-- The workspace and fuzz harness now pin `soroban-sdk` 22.0.7 and its
-  Rust-1.79-compatible Soroban tooling/transitive versions, upgrading all
-  contracts to SDK v22 without changing the repository toolchain baseline.
-  (#316)
 - The workspace and fuzz harness now use `soroban-sdk` 21.7.7. The migration
   adapts SDK 21's `sha256` `Hash<32>` return values to the existing `BytesN<32>`
   UID/domain types and updates Stellar asset test registration to the v2 test
@@ -132,16 +119,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   replacements are discoverable through indexer lookups.
 
 ### Fixed
-- Indexer fail-open reconciliation now replays the correct indexer argument
-  shape in bulk, preserves original issuance timestamps through
-  `index_attestation_at`, reports per-UID failures, and keeps the legacy
-  indexer entry point as a compatibility fallback. (#307)
-- Hardened the SAS cross-contract trust boundary: registry read/auth failures
-  now surface as typed IncompatibleDependency errors instead of host traps or
-  false Unauthorized results, and resolver callbacks accept only an exact
-  successful nested invocation. Added adversarial registry coverage and a
-  documented failure-policy matrix for registry, resolver, indexer, and token
-  calls. (#317)
 - `SAS::set_indexer` and `SAS::attest` no longer trap when the contract has
   not been initialized. Both now report `SASError::NotInitialized` through a
   shared `require_admin` / `require_registry` guard, so SDK and CLI callers
