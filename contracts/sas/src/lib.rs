@@ -44,6 +44,8 @@ pub const DELEGATION_NONCE: Symbol = symbol_short!("DELNONCE");
 pub const SAS_VERSION: Symbol = symbol_short!("VERSION");
 /// Hash targeted by the most recent successful upgrade invocation.
 pub const CURRENT_WASM_HASH: Symbol = symbol_short!("WASMHASH");
+/// Emergency pause flag. When `true`, write operations are blocked (#255).
+pub const PAUSED: Symbol = symbol_short!("PAUSED");
 /// Highest version whose upgrade path this build knows and has been audited
 /// to activate. Increase only as part of a reviewed release.
 pub const MAX_KNOWN_VERSION: u32 = 2;
@@ -54,6 +56,10 @@ pub const MAX_MULTI_ATTEST: u32 = 100;
 /// `MAX_MULTI_ATTEST` so the loop cannot exhaust the Soroban budget and
 /// callers get a predictable `BatchTooLarge` error up front.
 pub const MAX_MULTI_REVOKE: u32 = 100;
+/// Instance key for the `multi_attest` reentrancy guard. It is held (`true`)
+/// for the duration of a batch and removed on the success path; a nested
+/// `multi_attest` while it is held aborts with `SASError::Reentrancy` (#296).
+pub const REENTRANCY_GUARD: Symbol = symbol_short!("REENTRY");
 const REGISTRY_INTERFACE_VERSION: Symbol = symbol_short!("SASREG");
 
 fn extend_instance_ttl(env: &Env) {
@@ -82,6 +88,46 @@ fn require_registry(env: &Env) -> Address {
         Some(registry) => registry,
         None => panic_with_error!(env, SASError::NotInitialized),
     }
+}
+
+/// Checks if the contract is paused. Returns `true` if paused, `false` otherwise.
+fn is_paused_status(env: &Env) -> bool {
+    env.storage().instance().get(&PAUSED).unwrap_or(false)
+}
+
+/// Marks `multi_attest` as in progress, rejecting a nested invocation.
+///
+/// The host refuses direct cross-contract re-entry before this can fire, so
+/// the guard is defense-in-depth: it pins the invariant on the contract itself
+/// rather than relying on the host's current behaviour.
+///
+/// Soroban rolls back every storage write made by a panicking invocation, so
+/// a trap inside the guarded section cannot leave the guard behind; only the
+/// success path needs to release it via [`exit_reentrancy_guard`].
+fn enter_reentrancy_guard(env: &Env) {
+    if env
+        .storage()
+        .instance()
+        .get::<_, bool>(&REENTRANCY_GUARD)
+        .unwrap_or(false)
+    {
+        panic_with_error!(env, SASError::Reentrancy);
+    }
+    env.storage().instance().set(&REENTRANCY_GUARD, &true);
+}
+
+/// Releases the `multi_attest` reentrancy guard on the success path.
+fn exit_reentrancy_guard(env: &Env) {
+    env.storage().instance().remove(&REENTRANCY_GUARD);
+}
+
+/// Validates that an attestation has not expired. Returns `Ok(())` if valid,
+/// or `Err(SASError::AlreadyExpired)` if the expiration time is set and has passed.
+fn validate_expiration(env: &Env, expiration_time: u64) -> Result<(), SASError> {
+    if expiration_time != 0 && expiration_time <= env.ledger().timestamp() {
+        return Err(SASError::AlreadyExpired);
+    }
+    Ok(())
 }
 
 fn required_upgrade_address(env: &Env, key: &Symbol) -> Result<Address, SASError> {
@@ -258,6 +304,35 @@ impl SAS {
         events::publish_admin_transfer_completed(&env, &old_admin, &pending_admin);
     }
 
+    /// Emergency pause: blocks all write operations while keeping read-only
+    /// operations active (#255). Only the admin can pause. Emits `ContractPaused`.
+    pub fn pause(env: Env) {
+        extend_instance_ttl(&env);
+        let admin = require_admin(&env);
+        admin.require_auth();
+        env.storage().instance().set(&PAUSED, &true);
+        extend_instance_ttl(&env);
+        events::publish_contract_paused(&env, admin);
+    }
+
+    /// Emergency unpause: resumes write operations after a `pause` (#255).
+    /// Only the admin can unpause. Emits `ContractUnpaused`.
+    pub fn unpause(env: Env) {
+        extend_instance_ttl(&env);
+        let admin = require_admin(&env);
+        admin.require_auth();
+        env.storage().instance().set(&PAUSED, &false);
+        extend_instance_ttl(&env);
+        events::publish_contract_unpaused(&env, admin);
+    }
+
+    /// Public read: returns whether the contract is currently paused (#255).
+    /// Read-only entry points remain active even when paused.
+    pub fn is_paused(env: Env) -> bool {
+        extend_instance_ttl(&env);
+        is_paused_status(&env)
+    }
+
     /// Returns the bound indexer, if one has been configured.
     pub fn get_indexer(env: Env) -> Option<Address> {
         extend_instance_ttl(&env);
@@ -357,6 +432,9 @@ impl SAS {
     }
 
     pub fn attest(env: Env, attestation: Attestation) -> UID {
+        if is_paused_status(&env) {
+            panic_with_error!(&env, SASError::ContractPaused);
+        }
         attestation.attester.require_auth();
         Self::attest_internal(env, attestation)
     }
@@ -368,6 +446,9 @@ impl SAS {
         signature: soroban_sdk::BytesN<64>,
         public_key: soroban_sdk::BytesN<32>,
     ) -> UID {
+        if is_paused_status(&env) {
+            panic_with_error!(&env, SASError::ContractPaused);
+        }
         if attestation.revocation_time != 0 {
             panic_with_error!(&env, SASError::AlreadyRevoked);
         }
@@ -394,6 +475,9 @@ impl SAS {
 
         // Bound payload size before any storage, hashing, or cross-contract
         // calls so oversized attestations fail fast with a typed error. (#157)
+        // Resolvers implementing `on_attest` can rely on this ceiling already
+        // having been enforced — see the "Payload Size" section of
+        // docs/schemas.md for the resolver-facing guarantee this provides.
         if attestation.data.len() > MAX_ATTESTATION_DATA_BYTES {
             panic_with_error!(&env, SASError::PayloadTooLarge);
         }
@@ -417,10 +501,8 @@ impl SAS {
             panic_with_error!(&env, SASError::InvalidUID);
         }
 
-        if attestation.expiration_time != 0
-            && attestation.expiration_time <= env.ledger().timestamp()
-        {
-            panic_with_error!(&env, SASError::AlreadyExpired);
+        if let Err(err) = validate_expiration(&env, attestation.expiration_time) {
+            panic_with_error!(&env, err);
         }
 
         if let Err(err) = soroban_sas_common::validate_recipient(&env, &attestation.recipient) {
@@ -620,6 +702,38 @@ impl SAS {
     /// (`NotInitialized` otherwise), and reports a still-failing Indexer as
     /// `SASError::IndexerUnavailable` so callers know to retry later. On
     /// success emits `Reindexed(uid)`.
+
+    pub fn bulk_reindex(env: Env, uids: soroban_sdk::Vec<UID>) -> soroban_sdk::Vec<UID> {
+        extend_instance_ttl(&env);
+        if uids.len() > 100 {
+            panic_with_error!(&env, SASError::BatchTooLarge);
+        }
+
+        let Some(indexer) = env.storage().instance().get::<_, Address>(&INDEXER) else {
+            panic_with_error!(&env, SASError::NotInitialized);
+        };
+
+        let mut failed = soroban_sdk::Vec::new(&env);
+        for uid in uids.iter() {
+            if let Some(attestation) = env.storage().persistent().get::<_, Attestation>(&uid) {
+                let outcome = env.try_invoke_contract::<(), soroban_sdk::Error>(
+                    &indexer,
+                    &soroban_sdk::Symbol::new(&env, "index_attestation"),
+                    soroban_sdk::vec![&env, attestation.into_val(&env)],
+                );
+                if outcome.is_err() {
+                    failed.push_back(uid);
+                } else {
+                    env.events()
+                        .publish((soroban_sas_common::events::REINDEXED, uid), ());
+                }
+            } else {
+                failed.push_back(uid);
+            }
+        }
+        failed
+    }
+
     pub fn reindex_attestation(env: Env, uid: UID) {
         extend_instance_ttl(&env);
         let Some(attestation) = env.storage().persistent().get::<_, Attestation>(&uid) else {
@@ -646,6 +760,9 @@ impl SAS {
     }
 
     pub fn revoke(env: Env, uid: UID) {
+        if is_paused_status(&env) {
+            panic_with_error!(&env, SASError::ContractPaused);
+        }
         let Some(attestation) = env.storage().persistent().get::<_, Attestation>(&uid) else {
             panic_with_error!(&env, SASError::AttestationNotFound);
         };
@@ -657,6 +774,9 @@ impl SAS {
     /// `authorizer` must either be the original attester, or an authorized
     /// delegate / primary owner of the schema recorded in the registry (#7).
     pub fn revoke_by_authorizer(env: Env, uid: UID, authorizer: Address) {
+        if is_paused_status(&env) {
+            panic_with_error!(&env, SASError::ContractPaused);
+        }
         let Some(attestation) = env.storage().persistent().get::<_, Attestation>(&uid) else {
             panic_with_error!(&env, SASError::AttestationNotFound);
         };
@@ -684,6 +804,9 @@ impl SAS {
 
     /// Convenience alias for `revoke_by_authorizer` using a delegate address (#7).
     pub fn revoke_by_delegate(env: Env, uid: UID, delegate: Address) {
+        if is_paused_status(&env) {
+            panic_with_error!(&env, SASError::ContractPaused);
+        }
         Self::revoke_by_authorizer(env, uid, delegate);
     }
 
@@ -694,6 +817,9 @@ impl SAS {
         signature: soroban_sdk::BytesN<64>,
         public_key: soroban_sdk::BytesN<32>,
     ) {
+        if is_paused_status(&env) {
+            panic_with_error!(&env, SASError::ContractPaused);
+        }
         let Some(attestation) = env.storage().persistent().get::<_, Attestation>(&uid) else {
             panic_with_error!(&env, SASError::AttestationNotFound);
         };
@@ -791,7 +917,16 @@ impl SAS {
     /// revocable and not already revoked, and `new_data.attester`/`recipient`
     /// to match the old attestation's — a replacement changes what is being
     /// claimed, not who is claiming it or about whom.
+    ///
+    /// `new_data.expiration_time` must not shorten the old attestation's
+    /// expiration: if both are non-zero, `new_data.expiration_time` must be
+    /// `>= old.expiration_time`, or this panics with `SASError::InvalidTTL`.
+    /// Replacing with `expiration_time == 0` (perpetual) is always allowed.
+    /// See `docs/attestations.md` and `specs/protocol-v1.md` (#252).
     pub fn replace_attestation(env: Env, old_uid: UID, new_data: Attestation) -> UID {
+        if is_paused_status(&env) {
+            panic_with_error!(&env, SASError::ContractPaused);
+        }
         extend_instance_ttl(&env);
         let Some(old) = env.storage().persistent().get::<_, Attestation>(&old_uid) else {
             panic_with_error!(&env, SASError::AttestationNotFound);
@@ -805,8 +940,23 @@ impl SAS {
         if old.revocation_time != 0 {
             panic_with_error!(&env, SASError::AlreadyRevoked);
         }
+        if validate_expiration(&env, old.expiration_time).is_err() {
+            panic_with_error!(&env, SASError::InvalidTTL);
+        }
         if new_data.attester != old.attester || new_data.recipient != old.recipient {
             panic_with_error!(&env, SASError::Unauthorized);
+        }
+        // Replacements may extend an expiration or make it perpetual
+        // (`expiration_time == 0`), but never shorten it: an attester could
+        // otherwise bypass resolver revocation checks by "replacing" a valid
+        // multi-year attestation with one whose expiration is already in the
+        // past, expiring it immediately without an `on_revoke` callback or an
+        // `AttestationRevoked` event (#252).
+        if old.expiration_time != 0
+            && new_data.expiration_time != 0
+            && new_data.expiration_time < old.expiration_time
+        {
+            panic_with_error!(&env, SASError::InvalidTTL);
         }
 
         let new_data = Attestation {
@@ -833,10 +983,19 @@ impl SAS {
         env: Env,
         attestations: soroban_sdk::Vec<Attestation>,
     ) -> soroban_sdk::Vec<UID> {
+        if is_paused_status(&env) {
+            panic_with_error!(&env, SASError::ContractPaused);
+        }
         extend_instance_ttl(&env);
         if attestations.len() > MAX_MULTI_ATTEST {
             panic_with_error!(&env, SASError::BatchTooLarge);
         }
+        // Serialize the batch: a nested `multi_attest` while this one is still
+        // running is rejected, so it cannot interleave its storage writes with
+        // ours. The host already refuses direct cross-contract re-entry, which
+        // makes this defense-in-depth for the callback path (resolver and
+        // indexer) rather than the only line of defence.
+        enter_reentrancy_guard(&env);
         let mut uids = soroban_sdk::Vec::new(&env);
         let mut authorized_attesters = soroban_sdk::Map::new(&env);
         // Map lookup avoids scanning all previously authorized attesters.
@@ -853,6 +1012,7 @@ impl SAS {
         // whole batch committed: a panic anywhere above reverts the call and
         // this never runs.
         events::publish_batch_attested(&env, uids.len(), authorized_attesters.len());
+        exit_reentrancy_guard(&env);
         uids
     }
 
@@ -874,6 +1034,9 @@ impl SAS {
         token: Address,
         value: i128,
     ) -> UID {
+        if is_paused_status(&env) {
+            panic_with_error!(&env, SASError::ContractPaused);
+        }
         extend_instance_ttl(&env);
         if value < 0 {
             panic_with_error!(&env, SASError::InvalidValue);
@@ -916,6 +1079,9 @@ impl SAS {
     /// dedup, like `multi_attest`), and the actual state mutations go
     /// through `revoke_internal` so storage-read/auth work is not repeated.
     pub fn multi_revoke(env: Env, uids: soroban_sdk::Vec<UID>) {
+        if is_paused_status(&env) {
+            panic_with_error!(&env, SASError::ContractPaused);
+        }
         extend_instance_ttl(&env);
         if uids.len() > MAX_MULTI_REVOKE {
             panic_with_error!(&env, SASError::BatchTooLarge);
@@ -978,6 +1144,9 @@ impl SAS {
     /// Re-registering after a revocation is allowed and starts a new
     /// version.
     pub fn register_attester_key(env: Env, attester: Address, public_key: soroban_sdk::BytesN<32>) {
+        if is_paused_status(&env) {
+            panic_with_error!(&env, SASError::ContractPaused);
+        }
         extend_instance_ttl(&env);
         attester.require_auth();
 
@@ -1030,6 +1199,9 @@ impl SAS {
         attester: Address,
         new_public_key: soroban_sdk::BytesN<32>,
     ) {
+        if is_paused_status(&env) {
+            panic_with_error!(&env, SASError::ContractPaused);
+        }
         attester.require_auth();
 
         let key = (ATTESTER_KEY, attester.clone());
@@ -1083,6 +1255,9 @@ impl SAS {
     /// so a future `register_attester_key` call continues the version
     /// sequence instead of restarting at `1`.
     pub fn revoke_attester_key(env: Env, attester: Address) {
+        if is_paused_status(&env) {
+            panic_with_error!(&env, SASError::ContractPaused);
+        }
         attester.require_auth();
 
         let key = (ATTESTER_KEY, attester.clone());
@@ -1172,10 +1347,8 @@ impl SAS {
         if attestation.revocation_time != 0 {
             panic_with_error!(&env, SASError::AlreadyRevoked);
         }
-        if attestation.expiration_time != 0
-            && env.ledger().timestamp() >= attestation.expiration_time
-        {
-            panic_with_error!(&env, SASError::AlreadyExpired);
+        if let Err(err) = validate_expiration(&env, attestation.expiration_time) {
+            panic_with_error!(&env, err);
         }
 
         // An on-chain revocation of the same UID also invalidates the
@@ -1230,9 +1403,7 @@ impl SAS {
             if attestation.revocation_time != 0 {
                 return false;
             }
-            if attestation.expiration_time != 0
-                && env.ledger().timestamp() >= attestation.expiration_time
-            {
+            if validate_expiration(&env, attestation.expiration_time).is_err() {
                 return false;
             }
             true
@@ -1307,8 +1478,14 @@ impl SAS {
 #[cfg(test)]
 mod demo;
 #[cfg(test)]
+mod revocation_properties;
+#[cfg(test)]
 mod test;
 #[cfg(test)]
 mod test_extra;
 #[cfg(test)]
 mod test_issue_242;
+#[cfg(test)]
+mod test_issue_252;
+#[cfg(test)]
+mod test_issue_296;

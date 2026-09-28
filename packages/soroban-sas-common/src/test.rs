@@ -49,6 +49,24 @@ fn test_attestation_uid_is_deterministic_and_content_addressed() {
     );
 }
 
+/// `schema_uid` is documented (docs/schemas.md, "Schema ID Collision
+/// Resistance") as hashing the revocability flag together with the schema
+/// string and resolver, so a revocable and a non-revocable schema that are
+/// otherwise identical must never share a UID.
+#[test]
+fn test_schema_uid_is_sensitive_to_the_revocable_flag() {
+    let env = Env::default();
+    let resolver = Address::generate(&env);
+    let schema = SorobanString::from_str(&env, "score U32");
+
+    let revocable = crate::schema_uid(&env, &schema, &resolver, true);
+    let irrevocable = crate::schema_uid(&env, &schema, &resolver, false);
+
+    assert_ne!(revocable, irrevocable);
+    assert_eq!(revocable, crate::schema_uid(&env, &schema, &resolver, true));
+}
+
+use crate::validation::check_revocable;
 use crate::validation::validate_recipient;
 use crate::validation::validate_schema_syntax;
 use crate::validation::validate_ttl;
@@ -67,6 +85,22 @@ fn test_validate_ttl() {
     assert!(validate_ttl(&env, 100, 100).is_err()); // expired exactly at current time
 }
 
+/// `check_revocable` is the single place the schema-level revocability
+/// ceiling is enforced, shared by every issuance path. Pin its full truth
+/// table: only `(non-revocable schema, revocable attestation)` is rejected.
+#[test]
+fn test_check_revocable_truth_table() {
+    let env = Env::default();
+
+    assert!(check_revocable(&env, false, false).is_ok());
+    assert!(check_revocable(&env, true, true).is_ok());
+    assert!(check_revocable(&env, true, false).is_ok());
+    assert_eq!(
+        check_revocable(&env, false, true),
+        Err(crate::errors::SASError::NotRevocable)
+    );
+}
+
 #[test]
 fn test_validate_schema_syntax_rejects_malformed_strings() {
     let env = Env::default();
@@ -81,6 +115,39 @@ fn test_validate_schema_syntax_rejects_malformed_strings() {
 
     let schema = soroban_sdk::String::from_str(&env, "first_name String, last_name String");
     assert!(validate_schema_syntax(&env, &schema).is_ok());
+}
+
+#[test]
+fn test_validate_schema_syntax_enforces_max_field_count() {
+    extern crate std;
+    let env = Env::default();
+
+    // Exactly MAX_SCHEMA_FIELDS fields is accepted.
+    let at_limit = (0..crate::validation::MAX_SCHEMA_FIELDS)
+        .map(|i| std::format!("f{i} B"))
+        .collect::<std::vec::Vec<_>>()
+        .join(",");
+    let schema = soroban_sdk::String::from_str(&env, &at_limit);
+    assert!(
+        validate_schema_syntax(&env, &schema).is_ok(),
+        "a schema with exactly MAX_SCHEMA_FIELDS fields must be accepted"
+    );
+
+    // MAX_SCHEMA_FIELDS + 1 fields is rejected, even though it still fits
+    // within MAX_SCHEMA_LENGTH bytes.
+    let over_limit = (0..=crate::validation::MAX_SCHEMA_FIELDS)
+        .map(|i| std::format!("f{i} B"))
+        .collect::<std::vec::Vec<_>>()
+        .join(",");
+    assert!(
+        over_limit.len() <= 1024,
+        "fixture must stay within MAX_SCHEMA_LENGTH to isolate the field-count check"
+    );
+    let schema = soroban_sdk::String::from_str(&env, &over_limit);
+    assert_eq!(
+        validate_schema_syntax(&env, &schema),
+        Err(crate::errors::SASError::InvalidSchema)
+    );
 }
 
 #[test]
