@@ -95,29 +95,23 @@ fn run(dir: &Path, program: &str, args: &[&str]) -> String {
 /// duration of the test process (harmless in a disposable CI container).
 fn register_identity(secret: &str) -> String {
     let name = format!("integration-test-{}", std::process::id());
-    let output = Command::new(stellar_cli())
-        .args(["keys", "add", &name, "--secret-key"])
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .and_then(|mut child| {
-            use std::io::Write;
-            child
-                .stdin
-                .take()
-                .unwrap()
-                .write_all(format!("{secret}\n").as_bytes())?;
-            child.wait_with_output()
+    
+    // In stellar-cli v22, `stellar keys add` requires a TTY and fails from stdin.
+    // So we manually write the config TOML to bypass the bug.
+    let config_dir = std::env::var("XDG_CONFIG_HOME")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|_| {
+            let home = std::env::var("HOME").expect("HOME env var not set");
+            std::path::PathBuf::from(home).join(".config")
         })
-        .expect("failed to run `stellar keys add`");
-    if !output.status.success() {
-        // Identity may already exist from a prior run in the same container.
-        eprintln!(
-            "stellar keys add warning: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-    }
+        .join("stellar")
+        .join("identity");
+        
+    std::fs::create_dir_all(&config_dir).expect("failed to create stellar identity dir");
+    
+    let toml = format!("secret_key = \"{secret}\"\n");
+    std::fs::write(config_dir.join(format!("{name}.toml")), toml).expect("failed to write identity file");
+    
     name
 }
 
