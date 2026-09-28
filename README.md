@@ -110,7 +110,22 @@ cargo run -p soroban-sas-cli -- --output json attest attest \
 cargo run -p soroban-sas-cli -- --output json query by-recipient --address G... --contract-id C... --rpc-url URL
 cargo run -p soroban-sas-cli -- --output json query by-attester \
   --address G... --contract-id C... --rpc-url URL
+# One page (1-100 UIDs) of a large history; follow `next_cursor` until it is null
+cargo run -p soroban-sas-cli -- --output json query by-schema \
+  --uid UID... --contract-id C... --rpc-url URL --cursor 0 --limit 50
 ```
+
+Without `--cursor`/`--limit`, `query by-*` returns the complete history as
+`{"uids": [...]}`, exactly as before. With either flag it returns one page:
+`{"uids", "cursor", "limit", "total", "next_cursor"}`, where `next_cursor` is
+`null` once the history is exhausted.
+
+`attest attest`, `attest create`, `attest replace`, and `delegate
+submit-attest` reject an attestation with no usable recipient (the zero-address
+"no recipient" sentinel, or the attester itself) before any RPC call, with the
+same `InvalidRecipient` (402) error the SAS contract would return. SAS has no
+recipient-less on-chain attestations; `offchain sign`/`verify` do not
+constrain the recipient.
 
 Detailed usage and flags for every subcommand are available via:
 

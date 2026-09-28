@@ -215,6 +215,55 @@ fn test_validate_recipient_rejects_zero_addresses() {
     );
 }
 
+#[test]
+fn test_validate_attestation_parties_accepts_a_distinct_concrete_recipient() {
+    let env = Env::default();
+    let recipient = account_address(&env, &[3u8; 32]);
+    let attester = account_address(&env, &[4u8; 32]);
+    let contract_recipient = Address::from_string(&SorobanString::from_str(
+        &env,
+        &stellar_strkey::Contract([9u8; 32]).to_string(),
+    ));
+
+    assert_eq!(
+        crate::validation::validate_attestation_parties(&env, &recipient, &attester),
+        Ok(())
+    );
+    assert_eq!(
+        crate::validation::validate_attestation_parties(&env, &contract_recipient, &attester),
+        Ok(())
+    );
+}
+
+#[test]
+fn test_validate_attestation_parties_rejects_missing_and_self_recipients() {
+    let env = Env::default();
+    let attester = account_address(&env, &[4u8; 32]);
+    let zero_account = account_address(&env, &[0u8; 32]);
+    let zero_contract = Address::from_string(&SorobanString::from_str(
+        &env,
+        "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+    ));
+
+    // "No recipient" sentinels in either address space.
+    for missing in [&zero_account, &zero_contract] {
+        assert_eq!(
+            crate::validation::validate_attestation_parties(&env, missing, &attester),
+            Err(crate::errors::SASError::InvalidRecipient)
+        );
+    }
+    // A zero-sentinel attester is equally malformed.
+    assert_eq!(
+        crate::validation::validate_attestation_parties(&env, &attester, &zero_account),
+        Err(crate::errors::SASError::InvalidRecipient)
+    );
+    // Self-attestation is not a way to express "no recipient" either.
+    assert_eq!(
+        crate::validation::validate_attestation_parties(&env, &attester, &attester),
+        Err(crate::errors::SASError::InvalidRecipient)
+    );
+}
+
 use crate::merkle::MerkleRoot;
 use soroban_sdk::BytesN;
 

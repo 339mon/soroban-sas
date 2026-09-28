@@ -587,14 +587,15 @@ impl SAS {
             panic_with_error!(&env, err);
         }
 
-        if let Err(err) = soroban_sas_common::validate_recipient(&env, &attestation.recipient) {
+        // Shared with the SDK/CLI pre-flight checks so a missing
+        // ("no recipient" sentinel) or self-targeted recipient is rejected
+        // with the same `InvalidRecipient` wherever it is caught (#304).
+        if let Err(err) = soroban_sas_common::validate_attestation_parties(
+            &env,
+            &attestation.recipient,
+            &attestation.attester,
+        ) {
             panic_with_error!(&env, err);
-        }
-        if let Err(err) = soroban_sas_common::validate_recipient(&env, &attestation.attester) {
-            panic_with_error!(&env, err);
-        }
-        if attestation.recipient == attestation.attester {
-            panic_with_error!(&env, SASError::InvalidRecipient);
         }
 
         // Validate ref_uid integrity (#159): reject self-references and
@@ -719,18 +720,7 @@ impl SAS {
     /// issuance. A failed push emits `IndexFailed(uid)` so operators can
     /// detect the gap and repair it with `reindex_attestation` (#161).
     fn notify_indexer_of_issuance(env: &Env, indexer: &Address, attestation: &Attestation) {
-        let outcome = env.try_invoke_contract::<(), soroban_sdk::Error>(
-            indexer,
-            &Symbol::new(env, "index_attestation"),
-            soroban_sdk::vec![
-                env,
-                attestation.uid.clone().into_val(env),
-                attestation.recipient.clone().into_val(env),
-                attestation.schema_uid.clone().into_val(env),
-                attestation.attester.clone().into_val(env),
-            ],
-        );
-        if matches!(outcome, Ok(Ok(()))) {
+        if Self::push_to_indexer(env, indexer, attestation) {
             return;
         }
         if env
@@ -742,6 +732,26 @@ impl SAS {
             panic_with_error!(env, SASError::IndexerUnavailable);
         }
         events::publish_index_failed(env, &attestation.uid);
+    }
+
+    /// The single encoding of the SAS -> Indexer write:
+    /// `Indexer::index_attestation(uid, recipient, schema_uid, attester)`.
+    /// Returns whether the indexer accepted it. Issuance, `reindex_attestation`,
+    /// and `bulk_reindex` all go through here so the call shape cannot drift
+    /// between them (#309).
+    fn push_to_indexer(env: &Env, indexer: &Address, attestation: &Attestation) -> bool {
+        let outcome = env.try_invoke_contract::<(), soroban_sdk::Error>(
+            indexer,
+            &Symbol::new(env, "index_attestation"),
+            soroban_sdk::vec![
+                env,
+                attestation.uid.clone().into_val(env),
+                attestation.recipient.clone().into_val(env),
+                attestation.schema_uid.clone().into_val(env),
+                attestation.attester.clone().into_val(env),
+            ],
+        );
+        matches!(outcome, Ok(Ok(())))
     }
 
     /// Admin: choose the Indexer availability policy (#161).
@@ -798,12 +808,7 @@ impl SAS {
         let mut failed = soroban_sdk::Vec::new(&env);
         for uid in uids.iter() {
             if let Some(attestation) = env.storage().persistent().get::<_, Attestation>(&uid) {
-                let outcome = env.try_invoke_contract::<(), soroban_sdk::Error>(
-                    &indexer,
-                    &soroban_sdk::Symbol::new(&env, "index_attestation"),
-                    soroban_sdk::vec![&env, attestation.into_val(&env)],
-                );
-                if outcome.is_err() {
+                if !Self::push_to_indexer(&env, &indexer, &attestation) {
                     failed.push_back(uid);
                 } else {
                     env.events()
@@ -824,18 +829,7 @@ impl SAS {
         let Some(indexer) = env.storage().instance().get::<_, Address>(&INDEXER) else {
             panic_with_error!(&env, SASError::NotInitialized);
         };
-        let outcome = env.try_invoke_contract::<(), soroban_sdk::Error>(
-            &indexer,
-            &Symbol::new(&env, "index_attestation"),
-            soroban_sdk::vec![
-                &env,
-                attestation.uid.clone().into_val(&env),
-                attestation.recipient.clone().into_val(&env),
-                attestation.schema_uid.clone().into_val(&env),
-                attestation.attester.clone().into_val(&env),
-            ],
-        );
-        if !matches!(outcome, Ok(Ok(()))) {
+        if !Self::push_to_indexer(&env, &indexer, &attestation) {
             panic_with_error!(&env, SASError::IndexerUnavailable);
         }
         events::publish_reindexed(&env, &uid);
@@ -1740,6 +1734,8 @@ mod revocation_properties;
 mod test;
 #[cfg(test)]
 mod test_extra;
+#[cfg(test)]
+mod test_indexer_integration;
 #[cfg(test)]
 mod test_issue_242;
 #[cfg(test)]

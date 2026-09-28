@@ -15,6 +15,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 | Indexer | `soroban_sas_indexer.wasm` | `TBD` |
 
 ### Added
+- Indexer pagination for every lookup dimension:
+  `get_atts_by_schema_paginated` and `get_atts_by_attester_paginated` join
+  `get_atts_by_recipient_paginated`, all backed by one chunk-window reader
+  with a documented contract (insertion order, exact page lengths, empty page
+  past the end). The SDK adds `IndexerClient::get_attestations_by_*_paginated`,
+  and the CLI's `query by-*` commands accept `--cursor`/`--limit`, reporting
+  `total` and `next_cursor`. Unpaginated output is unchanged. (#306)
+- SAS -> Indexer integration tests that deploy the real schema-registry, SAS,
+  and Indexer contracts together and cross-check indexed data against SAS
+  state and events. They cover ordering, authorization, rejected issuance,
+  revocation, replacement, fail-open/fail-closed outages, reindexing, rebinding,
+  and pagination. (#309)
+- CLI end-to-end tests that run the compiled binary against a local JSON-RPC
+  host executing the real contracts. They cover indexed queries, pagination,
+  on-chain verification, and missing-recipient handling. (#332)
 - Batched off-chain delegation signatures: `SAS::multi_attest_by_delegation`
   and `SAS::multi_revoke_by_delegation` accept parallel `attestations`/`uids`,
   `nonces`, `signatures`, and `public_keys` vectors and validate each item
@@ -56,6 +71,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   validator and `validate_schema_syntax` both replay the shared golden
   vectors in `packages/soroban-sas-common/test_vectors/schema_syntax.tsv`.
   Built and tested in the *Developer Tooling* workflow. (#346)
+
+### Fixed
+- Missing recipients are handled gracefully. `AttestationRequestBuilder` no
+  longer traps the host (panicking the caller) on a malformed or empty
+  recipient/attester strkey. It and the CLI's on-chain issuance commands now
+  reject the zero-address "no recipient" sentinel and self-attestation
+  locally, with the contract's own `InvalidRecipient` rule
+  (`soroban_sas_common::validate_attestation_parties`, now also used by
+  `SAS::attest_internal`). (#304)
+- `SAS::bulk_reindex` passed the whole attestation as a single argument to
+  `Indexer::index_attestation`, so every replay failed against a real Indexer.
+  All three SAS -> Indexer push sites now share one call encoding. (#309)
 - Revocability semantics coverage: delegated, batch, and paid issuance now
   each have an acceptance test for `revocable = true` under a revocable
   schema (rejection was already covered on every issuance path),

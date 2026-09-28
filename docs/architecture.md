@@ -90,6 +90,38 @@ compatibility probe (`sasreg`/`sasv1`) before trusting a configured
 dependency address — the indexer's SAS binding is a similar one-way trust
 relationship, just enforced per-call instead of once at initialization.
 
+### Indexer Pagination
+
+Each lookup key's history is stored as fixed-size persistent chunks of
+`MAX_CHUNK_SIZE` (100) UIDs plus a per-key counter. The complete reads
+(`get_attestations_by_*`) walk every chunk and so grow with the history.
+Callers with large histories use the paginated reads instead:
+`get_atts_by_recipient_paginated`, `get_atts_by_schema_paginated`, and
+`get_atts_by_attester_paginated`, each `(key, cursor, limit)`. All three share
+one reader (`collect_page`), which loads only the chunks that overlap the
+requested window. A page therefore costs `O(limit)` storage reads and TTL
+renewals, not `O(count)`.
+
+Pagination semantics follow from the append-only index. Ordering is
+insertion order (oldest first), and new UIDs are only ever appended, so pages
+stay stable while issuance continues. A page holds exactly
+`min(limit, count - cursor)` UIDs, so resuming at `cursor + page.len()` never
+skips or repeats an entry. `limit == 0` and any request at or beyond the end
+return an empty page. `get_count_by_*` provides `count` for totals. Paginated
+reads count toward the per-ledger query limit (`LimitExceeded`). The SDK
+(`IndexerClient::get_attestations_by_*_paginated`) and the CLI
+(`query by-* --cursor/--limit`, 1–100 UIDs per page) expose the same model.
+
+### Recipients
+
+Every on-chain attestation has a concrete recipient. SAS rejects the zero
+account/contract sentinels that other attestation systems use for "no
+recipient", and it rejects an attester naming itself, with `InvalidRecipient`
+(`soroban_sas_common::validate_attestation_parties`). The Indexer therefore
+never receives a recipient-less record. The SDK's `AttestationRequestBuilder`
+and the CLI's on-chain issuance commands apply the same shared check before
+building a transaction.
+
 ### Indexer Reconciliation
 
 When running under default fail-open mode, any downstream indexing failures emit `IndexFailed(uid)` (`IDXFAIL`) events rather than rolling back core attestation writes. Operators recover missed entries using `SAS::reindex_attestation(uid)`.

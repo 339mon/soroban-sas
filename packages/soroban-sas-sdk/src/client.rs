@@ -1733,6 +1733,89 @@ impl IndexerClient {
         )
     }
 
+    /// Calls `Indexer::get_atts_by_recipient_paginated(recipient, cursor,
+    /// limit)` via `simulateTransaction` (#306).
+    ///
+    /// Returns at most `limit` UIDs of `recipient`'s complete history
+    /// (oldest first) starting at position `cursor`. A page holds exactly
+    /// `min(limit, count - cursor)` UIDs, so the next page starts at
+    /// `cursor + page.len()`; an empty page means the end was reached. Pair
+    /// with [`IndexerClient::get_count_by_recipient`] for totals.
+    pub fn get_attestations_by_recipient_paginated(
+        &self,
+        env: &Env,
+        rpc: &RpcClient,
+        recipient: &str,
+        cursor: u32,
+        limit: u32,
+    ) -> Result<soroban_sdk::Vec<UID>, SdkError> {
+        let recipient = parse_address(env, recipient, AddressKind::Either, "recipient")?;
+        let args = vec![
+            simulate::encode_arg(env, &recipient)?,
+            simulate::encode_arg(env, &cursor)?,
+            simulate::encode_arg(env, &limit)?,
+        ];
+        invoke_read_only(
+            env,
+            rpc,
+            &self.contract_id,
+            "get_atts_by_recipient_paginated",
+            args,
+        )
+    }
+
+    /// Calls `Indexer::get_atts_by_schema_paginated(schema_uid, cursor,
+    /// limit)`. Same semantics as
+    /// [`IndexerClient::get_attestations_by_recipient_paginated`] (#306).
+    pub fn get_attestations_by_schema_paginated(
+        &self,
+        env: &Env,
+        rpc: &RpcClient,
+        schema_uid: &[u8; 32],
+        cursor: u32,
+        limit: u32,
+    ) -> Result<soroban_sdk::Vec<UID>, SdkError> {
+        let schema_uid = UID(BytesN::from_array(env, schema_uid));
+        let args = vec![
+            simulate::encode_arg(env, &schema_uid)?,
+            simulate::encode_arg(env, &cursor)?,
+            simulate::encode_arg(env, &limit)?,
+        ];
+        invoke_read_only(
+            env,
+            rpc,
+            &self.contract_id,
+            "get_atts_by_schema_paginated",
+            args,
+        )
+    }
+
+    /// Calls `Indexer::get_atts_by_attester_paginated(attester, cursor,
+    /// limit)`. Same semantics as
+    /// [`IndexerClient::get_attestations_by_recipient_paginated`] (#306).
+    pub fn get_attestations_by_attester_paginated(
+        &self,
+        env: &Env,
+        rpc: &RpcClient,
+        attester: &str,
+        cursor: u32,
+        limit: u32,
+    ) -> Result<soroban_sdk::Vec<UID>, SdkError> {
+        let attester = parse_address(env, attester, AddressKind::Either, "attester")?;
+        let args = vec![
+            simulate::encode_arg(env, &attester)?,
+            simulate::encode_arg(env, &cursor)?,
+            simulate::encode_arg(env, &limit)?,
+        ];
+        invoke_read_only(
+            env,
+            rpc,
+            &self.contract_id,
+            "get_atts_by_attester_paginated",
+            args,
+        )
+    }
+
     /// Filtered variant that mirrors the contract's
     /// `get_recipient_filtered` — when `include_revoked`
     /// is `false` only `Active` UIDs are returned, otherwise the full
@@ -2827,7 +2910,56 @@ mod tests {
                 Err(SdkError::DecodingError(_)) => {}
                 other => panic!("get_count_by_attester({bad:?}) = {other:?}"),
             }
+            match client.get_attestations_by_recipient_paginated(&env, &rpc, bad, 0, 10) {
+                Err(SdkError::DecodingError(_)) => {}
+                other => panic!("get_attestations_by_recipient_paginated({bad:?}) = {other:?}"),
+            }
+            match client.get_attestations_by_attester_paginated(&env, &rpc, bad, 0, 10) {
+                Err(SdkError::DecodingError(_)) => {}
+                other => panic!("get_attestations_by_attester_paginated({bad:?}) = {other:?}"),
+            }
         }
+    }
+
+    #[test]
+    fn paginated_indexer_queries_decode_a_page_from_simulation() {
+        let env = Env::default();
+        let page = soroban_sdk::vec![
+            &env,
+            UID(BytesN::from_array(&env, &[3u8; 32])),
+            UID(BytesN::from_array(&env, &[4u8; 32])),
+        ];
+        let result_xdr = simulate::encode_arg(&env, &page)
+            .unwrap()
+            .to_xdr_base64(Limits::none())
+            .unwrap();
+        let body = format!(
+            r#"{{"jsonrpc":"2.0","id":1,"result":{{"latestLedger":100,"results":[{{"xdr":"{result_xdr}"}}]}}}}"#
+        );
+        let client = IndexerClient::new(stellar_strkey::Contract([1u8; 32]).to_string());
+        let account = stellar_strkey::ed25519::PublicKey([5u8; 32]).to_string();
+
+        let rpc = RpcClient::new(spawn_mock_rpc_server(body.clone()));
+        assert_eq!(
+            client
+                .get_attestations_by_recipient_paginated(&env, &rpc, &account, 2, 2)
+                .unwrap(),
+            page
+        );
+        let rpc = RpcClient::new(spawn_mock_rpc_server(body.clone()));
+        assert_eq!(
+            client
+                .get_attestations_by_schema_paginated(&env, &rpc, &[2u8; 32], 2, 2)
+                .unwrap(),
+            page
+        );
+        let rpc = RpcClient::new(spawn_mock_rpc_server(body));
+        assert_eq!(
+            client
+                .get_attestations_by_attester_paginated(&env, &rpc, &account, 2, 2)
+                .unwrap(),
+            page
+        );
     }
 
     #[test]
