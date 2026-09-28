@@ -33,7 +33,7 @@ where
 #[test]
 fn test_pre_init_admin_endpoints_return_not_initialized() {
     let env = Env::default();
-    let cid = env.register_contract(None, SchemaRegistry);
+    let cid = env.register(SchemaRegistry, ());
     let client = SchemaRegistryClient::new(&env, &cid);
     env.mock_all_auths();
     let hash = BytesN::from_array(&env, &[0u8; 32]);
@@ -66,7 +66,7 @@ fn test_pre_init_admin_endpoints_return_not_initialized() {
 #[test]
 fn test_no_partial_write_on_failure() {
     let env = Env::default();
-    let cid = env.register_contract(None, SchemaRegistry);
+    let cid = env.register(SchemaRegistry, ());
     let client = SchemaRegistryClient::new(&env, &cid);
     env.mock_all_auths();
     // Try set_fee before init should fail and not write
@@ -94,7 +94,7 @@ fn test_no_partial_write_on_failure() {
 #[test]
 fn test_deprecate_unknown_and_idempotent() {
     let env = Env::default();
-    let cid = env.register_contract(None, SchemaRegistry);
+    let cid = env.register(SchemaRegistry, ());
     let client = SchemaRegistryClient::new(&env, &cid);
     let admin = Address::generate(&env);
     let owner = Address::generate(&env);
@@ -132,7 +132,7 @@ fn test_deprecate_unknown_and_idempotent() {
 fn test_get_schema_renews_active_record_and_missing_uid_is_read_only() {
     use soroban_sdk::testutils::Ledger;
     let env = Env::default();
-    let cid = env.register_contract(None, SchemaRegistry);
+    let cid = env.register(SchemaRegistry, ());
     let client = SchemaRegistryClient::new(&env, &cid);
     let admin = Address::generate(&env);
     let owner = Address::generate(&env);
@@ -168,7 +168,7 @@ fn test_get_schema_renews_active_record_and_missing_uid_is_read_only() {
 fn test_validate_schema_renews_on_success_and_missing_is_read_only() {
     use soroban_sdk::testutils::Ledger;
     let env = Env::default();
-    let cid = env.register_contract(None, SchemaRegistry);
+    let cid = env.register(SchemaRegistry, ());
     let client = SchemaRegistryClient::new(&env, &cid);
     let admin = Address::generate(&env);
     let owner = Address::generate(&env);
@@ -201,7 +201,7 @@ fn test_validate_schema_renews_on_success_and_missing_is_read_only() {
 #[test]
 fn test_get_schemas_pagination_skips_deprecated_and_returns_cursor() {
     let env = Env::default();
-    let cid = env.register_contract(None, SchemaRegistry);
+    let cid = env.register(SchemaRegistry, ());
     let client = SchemaRegistryClient::new(&env, &cid);
     let admin = Address::generate(&env);
     env.mock_all_auths();
@@ -239,7 +239,7 @@ fn test_get_schemas_pagination_skips_deprecated_and_returns_cursor() {
 
     // paginated cursor
     let env2 = Env::default();
-    let cid2 = env2.register_contract(None, SchemaRegistry);
+    let cid2 = env2.register(SchemaRegistry, ());
     let client2 = SchemaRegistryClient::new(&env2, &cid2);
     let admin2 = Address::generate(&env2);
     env2.mock_all_auths();
@@ -264,7 +264,7 @@ fn test_get_schemas_pagination_skips_deprecated_and_returns_cursor() {
 
     // bounded scanning: heavily deprecated (30 total, 25 deprecated, budget not hit but still bounded)
     let env3 = Env::default();
-    let cid3 = env3.register_contract(None, SchemaRegistry);
+    let cid3 = env3.register(SchemaRegistry, ());
     let client3 = SchemaRegistryClient::new(&env3, &cid3);
     let admin3 = Address::generate(&env3);
     env3.mock_all_auths();

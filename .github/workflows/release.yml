@@ -87,13 +87,13 @@ jobs:
         uses: taiki-e/install-action@cargo-binstall
       - name: Install stellar-cli and wasm-opt
         run: |
-          cargo binstall -y stellar-cli@21.4.0 --bin stellar
+          cargo binstall -y stellar-cli@22.0.1 --bin stellar
           cargo binstall -y wasm-opt
       - name: Start stellar-quickstart
         run: |
           docker run -d --name stellar-quickstart -p 8000:8000 \
             stellar/quickstart:testing@sha256:2182a7558123ff6420ea5516283616634673956530a8edf89796ebe4b58bd784 \
-            --standalone --enable-soroban-rpc
+            --standalone --enable-soroban-rpc --protocol-version 22
       - name: Wait for Soroban RPC readiness
         run: |
           for i in $(seq 1 60); do

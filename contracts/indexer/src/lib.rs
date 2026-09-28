@@ -1,7 +1,7 @@
 #![allow(unexpected_cfgs)]
 #![no_std]
 use soroban_sas_common::{
-    events::CONTRACT_UPGRADED, ContractUpgradedEvent, SASError, LEDGERS_IN_ONE_YEAR, UID,
+    events::CONTRACT_UPGRADED, ContractUpgradedEvent, Pausable, SASError, LEDGERS_IN_ONE_YEAR, UID,
 };
 use soroban_sdk::{
     contract, contractimpl, contracttype, panic_with_error, symbol_short, Address, BytesN, Env,
@@ -10,7 +10,7 @@ use soroban_sdk::{
 
 // v1.0.0 Indexer logic frozen
 //
-// Storage Format (Soroban SDK 21.7.7):
+// Storage Format (Soroban SDK 22.0.7):
 // - Instance storage: Admin, SAS contract, version, WASM hash, query counter state
 // - Persistent storage: Index chunks, status records, attestation metadata
 // All entries use TTL management with LEDGERS_IN_ONE_YEAR renewal period for durability.
@@ -18,8 +18,10 @@ use soroban_sdk::{
 #[contract]
 pub struct Indexer;
 
+impl Pausable for Indexer {}
+
 // ============================================================================
-// Storage Layout (Soroban SDK 21.7.7 - Modern Storage Patterns)
+// Storage Layout (Soroban SDK 22.0.7 - Modern Storage Patterns)
 // ============================================================================
 // Instance Storage (contract configuration):
 //   INDEXER_ADMIN      - Authority address
@@ -65,6 +67,10 @@ const STATUS_KEY: Symbol = symbol_short!("IDXSTAT");
 /// indexed with. Its presence marks the UID as already indexed and pins the
 /// metadata a retry must match.
 const INDEXED_KEY: Symbol = symbol_short!("INDEXED");
+/// Persistent key prefix for the canonical issuance timestamp of each UID.
+const ATTESTED_AT_KEY: Symbol = symbol_short!("IDXTIME");
+/// New complex-filter queries return at most one physical index chunk per page.
+const MAX_FILTER_PAGE_SIZE: u32 = MAX_CHUNK_SIZE;
 /// Instance key for tracking query count per ledger sequence.
 const QUERY_COUNTER_SEQ: Symbol = symbol_short!("QCSEQ");
 /// Instance key for tracking query count in the current sequence.
@@ -85,6 +91,24 @@ pub enum IndexStatus {
     Active,
     Revoked,
     Replaced,
+}
+
+/// Composable filters for index queries. Time bounds are inclusive and use
+/// the canonical attestation issuance timestamp recorded by SAS.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct IndexQueryFilter {
+    pub from_time: Option<u64>,
+    pub to_time: Option<u64>,
+    pub include_revoked: bool,
+}
+
+/// A filtered page plus the raw historical cursor needed to resume scanning.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct IndexQueryPage {
+    pub uids: soroban_sdk::Vec<UID>,
+    pub next_cursor: Option<u32>,
 }
 
 fn extend_instance_ttl(env: &Env) {
@@ -364,6 +388,167 @@ fn collect_filtered(
     out
 }
 
+fn require_bound_sas(env: &Env) -> Address {
+    let Some(sas): Option<Address> = env.storage().instance().get(&SAS_CONTRACT) else {
+        panic_with_error!(env, SASError::Unauthorized);
+    };
+    sas.require_auth();
+    sas
+}
+
+fn attested_at_key(uid: &UID) -> (Symbol, UID) {
+    (ATTESTED_AT_KEY, uid.clone())
+}
+
+fn record_attested_at(env: &Env, uid: &UID, attested_at: u64) {
+    let key = attested_at_key(uid);
+    if !env.storage().persistent().has(&key) {
+        env.storage().persistent().set(&key, &attested_at);
+    }
+    env.storage()
+        .persistent()
+        .extend_ttl(&key, LEDGERS_IN_ONE_YEAR, LEDGERS_IN_ONE_YEAR);
+}
+
+fn read_attested_at(env: &Env, uid: &UID) -> Option<u64> {
+    let key = attested_at_key(uid);
+    let value: Option<u64> = env.storage().persistent().get(&key);
+    if value.is_some() {
+        env.storage()
+            .persistent()
+            .extend_ttl(&key, LEDGERS_IN_ONE_YEAR, LEDGERS_IN_ONE_YEAR);
+    }
+    value
+}
+
+fn index_attestation_record(
+    env: &Env,
+    uid: &UID,
+    recipient: &Address,
+    schema_uid: &UID,
+    attester: &Address,
+    attested_at: u64,
+) {
+    let record: IndexRecord = (recipient.clone(), schema_uid.clone(), attester.clone());
+    let record_key = (INDEXED_KEY, uid.clone());
+    if let Some(existing) = env
+        .storage()
+        .persistent()
+        .get::<_, IndexRecord>(&record_key)
+    {
+        if existing != record {
+            panic_with_error!(env, SASError::DuplicateAttestation);
+        }
+        env.storage().persistent().extend_ttl(
+            &record_key,
+            LEDGERS_IN_ONE_YEAR,
+            LEDGERS_IN_ONE_YEAR,
+        );
+        // Legacy records did not store issuance time. A reindex can backfill
+        // it without changing the append-only recipient/schema/attester lists.
+        record_attested_at(env, uid, attested_at);
+        extend_instance_ttl(env);
+        return;
+    }
+
+    env.storage().persistent().set(&record_key, &record);
+    env.storage()
+        .persistent()
+        .extend_ttl(&record_key, LEDGERS_IN_ONE_YEAR, LEDGERS_IN_ONE_YEAR);
+    record_attested_at(env, uid, attested_at);
+
+    index_address_uid(env, recipient, uid, RECIPIENT_TOTAL);
+    index_uid_uid(env, schema_uid, uid, SCHEMA_TOTAL);
+    index_address_uid(env, attester, uid, ATTESTER_TOTAL);
+    extend_instance_ttl(env);
+}
+
+fn validate_query_filter(filter: &IndexQueryFilter) -> Result<(), SASError> {
+    if let (Some(from), Some(to)) = (filter.from_time, filter.to_time) {
+        if from > to {
+            return Err(SASError::InvalidValue);
+        }
+    }
+    Ok(())
+}
+
+fn matches_query_filter(env: &Env, uid: &UID, filter: &IndexQueryFilter) -> bool {
+    if !filter.include_revoked && !is_active(env, uid) {
+        return false;
+    }
+    if filter.from_time.is_none() && filter.to_time.is_none() {
+        return true;
+    }
+    let Some(attested_at) = read_attested_at(env, uid) else {
+        // Legacy rows without timestamp metadata are intentionally omitted
+        // from bounded queries until they are backfilled by reindexing.
+        return false;
+    };
+    if let Some(from) = filter.from_time {
+        if attested_at < from {
+            return false;
+        }
+    }
+    if let Some(to) = filter.to_time {
+        if attested_at > to {
+            return false;
+        }
+    }
+    true
+}
+
+fn collect_query_page(
+    env: &Env,
+    total: u32,
+    mut get_chunk: impl FnMut(u32) -> Option<soroban_sdk::Vec<UID>>,
+    cursor: u32,
+    limit: u32,
+    filter: &IndexQueryFilter,
+) -> IndexQueryPage {
+    if cursor >= total || limit == 0 {
+        return IndexQueryPage {
+            uids: soroban_sdk::Vec::new(env),
+            next_cursor: None,
+        };
+    }
+
+    let limit = core::cmp::min(limit, MAX_FILTER_PAGE_SIZE);
+    let mut out = soroban_sdk::Vec::new(env);
+    let mut index = cursor;
+    let mut loaded: Option<u32> = None;
+    let mut chunk = soroban_sdk::Vec::new(env);
+
+    while index < total && out.len() < limit {
+        let chunk_index = index / MAX_CHUNK_SIZE;
+        let chunk_offset = index % MAX_CHUNK_SIZE;
+        if loaded != Some(chunk_index) {
+            let Some(next) = get_chunk(chunk_index) else {
+                return IndexQueryPage {
+                    uids: out,
+                    next_cursor: None,
+                };
+            };
+            chunk = next;
+            loaded = Some(chunk_index);
+        }
+        if chunk_offset >= chunk.len() {
+            index = (chunk_index + 1) * MAX_CHUNK_SIZE;
+            continue;
+        }
+        if let Some(uid) = chunk.get(chunk_offset) {
+            if matches_query_filter(env, &uid, filter) {
+                out.push_back(uid);
+            }
+        }
+        index = index.saturating_add(1);
+    }
+
+    IndexQueryPage {
+        uids: out,
+        next_cursor: if index < total { Some(index) } else { None },
+    }
+}
+
 #[contractimpl]
 impl Indexer {
     /// Compatibility probe used by Indexer::init to prove the supplied
@@ -424,6 +609,30 @@ impl Indexer {
         env.storage().instance().get(&INDEXER_VERSION).unwrap_or(1)
     }
 
+    /// Emergency stop for index writes. Queries and upgrades stay available.
+    pub fn pause(env: Env) {
+        extend_instance_ttl(&env);
+        let admin = require_indexer_admin(&env);
+        admin.require_auth();
+        <Self as Pausable>::set_paused(&env, &admin);
+        extend_instance_ttl(&env);
+    }
+
+    /// Resumes index writes after an emergency pause.
+    pub fn unpause(env: Env) {
+        extend_instance_ttl(&env);
+        let admin = require_indexer_admin(&env);
+        admin.require_auth();
+        <Self as Pausable>::set_unpaused(&env, &admin);
+        extend_instance_ttl(&env);
+    }
+
+    /// Returns the current emergency-stop state.
+    pub fn is_paused(env: Env) -> bool {
+        extend_instance_ttl(&env);
+        <Self as Pausable>::is_paused(&env)
+    }
+
     /// Activates the next audited WASM version in place.
     pub fn upgrade(env: Env, new_wasm_hash: BytesN<32>, new_version: u32) {
         extend_instance_ttl(&env);
@@ -480,44 +689,28 @@ impl Indexer {
         schema_uid: UID,
         attester: Address,
     ) {
-        let Some(sas): Option<Address> = env.storage().instance().get(&SAS_CONTRACT) else {
-            panic_with_error!(&env, SASError::Unauthorized);
-        };
-        sas.require_auth();
+        <Self as Pausable>::require_not_paused(&env);
+        require_bound_sas(&env);
         extend_instance_ttl(&env);
+        let attested_at = env.ledger().timestamp();
+        index_attestation_record(&env, &uid, &recipient, &schema_uid, &attester, attested_at);
+    }
 
-        let record: IndexRecord = (recipient.clone(), schema_uid.clone(), attester.clone());
-        let record_key = (INDEXED_KEY, uid.clone());
-        if let Some(existing) = env
-            .storage()
-            .persistent()
-            .get::<_, IndexRecord>(&record_key)
-        {
-            if existing != record {
-                panic_with_error!(&env, SASError::DuplicateAttestation);
-            }
-            // Identical retry: renew the idempotency record's TTL and return
-            // without touching the append-only indexes.
-            env.storage().persistent().extend_ttl(
-                &record_key,
-                LEDGERS_IN_ONE_YEAR,
-                LEDGERS_IN_ONE_YEAR,
-            );
-            extend_instance_ttl(&env);
-            return;
-        }
-
-        env.storage().persistent().set(&record_key, &record);
-        env.storage().persistent().extend_ttl(
-            &record_key,
-            LEDGERS_IN_ONE_YEAR,
-            LEDGERS_IN_ONE_YEAR,
-        );
-
-        index_address_uid(&env, &recipient, &uid, RECIPIENT_TOTAL);
-        index_uid_uid(&env, &schema_uid, &uid, SCHEMA_TOTAL);
-        index_address_uid(&env, &attester, &uid, ATTESTER_TOTAL);
+    /// Timestamp-aware index write used by current SAS deployments and
+    /// reconciliation. The legacy `index_attestation` entry point remains for
+    /// compatibility and records the current ledger timestamp.
+    pub fn index_attestation_at(
+        env: Env,
+        uid: UID,
+        recipient: Address,
+        schema_uid: UID,
+        attester: Address,
+        attested_at: u64,
+    ) {
+        <Self as Pausable>::require_not_paused(&env);
+        require_bound_sas(&env);
         extend_instance_ttl(&env);
+        index_attestation_record(&env, &uid, &recipient, &schema_uid, &attester, attested_at);
     }
 
     /// Returns the recorded [`IndexStatus`] for `uid`, or `None` when the
@@ -768,6 +961,71 @@ impl Indexer {
             index += 1;
         }
         out
+    }
+    /// Queries recipient history with composable lifecycle and inclusive time filters.
+    pub fn query_recipient(
+        env: Env,
+        recipient: Address,
+        filter: IndexQueryFilter,
+        cursor: u32,
+        limit: u32,
+    ) -> IndexQueryPage {
+        if let Err(error) = check_query_limit(&env).and_then(|_| validate_query_filter(&filter)) {
+            panic_with_error!(&env, error);
+        }
+        let total = index_total(&env, &(RECIPIENT_TOTAL, recipient.clone()));
+        collect_query_page(
+            &env,
+            total,
+            |chunk_index| read_chunk(&env, &(recipient.clone(), chunk_index)),
+            cursor,
+            limit,
+            &filter,
+        )
+    }
+
+    /// Queries schema history with composable lifecycle and inclusive time filters.
+    pub fn query_schema(
+        env: Env,
+        schema_uid: UID,
+        filter: IndexQueryFilter,
+        cursor: u32,
+        limit: u32,
+    ) -> IndexQueryPage {
+        if let Err(error) = check_query_limit(&env).and_then(|_| validate_query_filter(&filter)) {
+            panic_with_error!(&env, error);
+        }
+        let total = index_total(&env, &(SCHEMA_TOTAL, schema_uid.clone()));
+        collect_query_page(
+            &env,
+            total,
+            |chunk_index| read_chunk(&env, &(schema_uid.clone(), chunk_index)),
+            cursor,
+            limit,
+            &filter,
+        )
+    }
+
+    /// Queries attester history with composable lifecycle and inclusive time filters.
+    pub fn query_attester(
+        env: Env,
+        attester: Address,
+        filter: IndexQueryFilter,
+        cursor: u32,
+        limit: u32,
+    ) -> IndexQueryPage {
+        if let Err(error) = check_query_limit(&env).and_then(|_| validate_query_filter(&filter)) {
+            panic_with_error!(&env, error);
+        }
+        let total = index_total(&env, &(ATTESTER_TOTAL, attester.clone()));
+        collect_query_page(
+            &env,
+            total,
+            |chunk_index| read_chunk(&env, &(attester.clone(), chunk_index)),
+            cursor,
+            limit,
+            &filter,
+        )
     }
 }
 

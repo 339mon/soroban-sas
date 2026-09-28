@@ -12,8 +12,7 @@ pub struct MockSas;
 
 #[contractimpl]
 impl MockSas {
-    #[allow(non_snake_case)]
-    pub fn SASV1(_env: Env) -> bool {
+    pub fn sasv1(_env: Env) -> bool {
         true
     }
 
@@ -73,10 +72,10 @@ fuzz_target!(|data: &[u8]| {
     let env = Env::default();
     env.mock_all_auths();
 
-    let indexer_id = env.register_contract(None, Indexer);
+    let indexer_id = env.register(Indexer, ());
     let client = IndexerClient::new(&env, &indexer_id);
     let admin = Address::generate(&env);
-    let sas = env.register_contract(None, MockSas);
+    let sas = env.register(MockSas, ());
 
     client.init(&admin, &sas);
 
@@ -165,21 +164,21 @@ fuzz_target!(|data: &[u8]| {
     // in every chunk for every key dimension
     for (uid, recipient, schema_uid, attester) in successful_quads {
         let recipient_uids = client.get_attestations_by_recipient(&recipient);
-        let recipient_count = recipient_uids.iter().filter(|u| *u == &uid).count();
+        let recipient_count = recipient_uids.iter().filter(|u| *u == uid).count();
         assert_eq!(
             recipient_count, 1,
             "UID must appear at most once in recipient index"
         );
 
         let schema_uids = client.get_attestations_by_schema(&schema_uid);
-        let schema_count = schema_uids.iter().filter(|u| *u == &uid).count();
+        let schema_count = schema_uids.iter().filter(|u| *u == uid).count();
         assert_eq!(
             schema_count, 1,
             "UID must appear at most once in schema index"
         );
 
         let attester_uids = client.get_attestations_by_attester(&attester);
-        let attester_count = attester_uids.iter().filter(|u| *u == &uid).count();
+        let attester_count = attester_uids.iter().filter(|u| *u == uid).count();
         assert_eq!(
             attester_count, 1,
             "UID must appear at most once in attester index"
