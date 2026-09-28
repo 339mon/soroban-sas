@@ -110,7 +110,9 @@ jobs:
           stellar network add standalone \
             --rpc-url http://localhost:8000/soroban/rpc \
             --network-passphrase "Standalone Network ; February 2017"
-          stellar keys generate --global gas-report-admin --network standalone --fund
+          stellar keys generate --global gas-report-admin --network standalone
+          PUB_KEY="$(stellar keys address gas-report-admin)"
+          curl -s "http://localhost:8000/friendbot?addr=$PUB_KEY" > /dev/null
           echo "SECRET_KEY=$(stellar keys show gas-report-admin)" >> "$GITHUB_ENV"
       - name: Run gas analysis
         env:

@@ -136,6 +136,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   shape in bulk, preserves original issuance timestamps through
   `index_attestation_at`, reports per-UID failures, and keeps the legacy
   indexer entry point as a compatibility fallback. (#307)
+- Hardened the SAS cross-contract trust boundary: registry read/auth failures
+  now surface as typed IncompatibleDependency errors instead of host traps or
+  false Unauthorized results, and resolver callbacks accept only an exact
+  successful nested invocation. Added adversarial registry coverage and a
+  documented failure-policy matrix for registry, resolver, indexer, and token
+  calls. (#317)
 - `SAS::set_indexer` and `SAS::attest` no longer trap when the contract has
   not been initialized. Both now report `SASError::NotInitialized` through a
   shared `require_admin` / `require_registry` guard, so SDK and CLI callers

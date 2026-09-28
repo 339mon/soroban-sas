@@ -90,6 +90,72 @@ fn require_registry(env: &Env) -> Address {
     }
 }
 
+/// Reads schema state across the registry trust boundary without allowing an
+/// untyped host trap to escape into the SAS public API. A missing schema is a
+/// legitimate `Ok(None)`; transport errors, traps, and incompatible return
+/// values are dependency failures.
+fn registry_get_schema(
+    env: &Env,
+    registry: &Address,
+    schema_uid: &UID,
+) -> Result<Option<soroban_sas_common::SchemaRecord>, SASError> {
+    match env.try_invoke_contract::<Option<soroban_sas_common::SchemaRecord>, soroban_sdk::Error>(
+        registry,
+        &Symbol::new(env, "get_schema"),
+        soroban_sdk::vec![env, schema_uid.clone().into_val(env)],
+    ) {
+        Ok(Ok(schema)) => Ok(schema),
+        _ => Err(SASError::IncompatibleDependency),
+    }
+}
+
+/// Distinguishes a real authorization denial from a broken or incompatible
+/// registry call. Callers can therefore fail closed without misreporting a
+/// dependency outage as an authorization decision.
+fn registry_is_authorized(
+    env: &Env,
+    registry: &Address,
+    schema_uid: &UID,
+    authorizer: &Address,
+) -> Result<bool, SASError> {
+    match env.try_invoke_contract::<bool, soroban_sdk::Error>(
+        registry,
+        &Symbol::new(env, "is_authorized"),
+        soroban_sdk::vec![
+            env,
+            schema_uid.clone().into_val(env),
+            authorizer.clone().into_val(env),
+        ],
+    ) {
+        Ok(Ok(authorized)) => Ok(authorized),
+        _ => Err(SASError::IncompatibleDependency),
+    }
+}
+
+/// Runs an authoritative resolver callback. Soroban's `try_invoke_contract`
+/// is nested: only `Ok(Ok(()))` is acceptance. Both invocation failures and
+/// contract-level errors reject atomically.
+fn require_resolver_acceptance(
+    env: &Env,
+    resolver: &Address,
+    callback: &Symbol,
+    attestation: &Attestation,
+) -> Result<(), SASError> {
+    match env.try_invoke_contract::<(), soroban_sdk::Error>(
+        resolver,
+        callback,
+        soroban_sdk::vec![env, attestation.clone().into_val(env)],
+    ) {
+        Ok(Ok(())) => Ok(()),
+        _ => Err(SASError::ResolverRejected),
+    }
+}
+
+/// Checks if the contract is paused. Returns `true` if paused, `false` otherwise.
+fn is_paused_status(env: &Env) -> bool {
+    env.storage().instance().get(&PAUSED).unwrap_or(false)
+}
+
 /// Marks `multi_attest` as in progress, rejecting a nested invocation.
 ///
 /// The host refuses direct cross-contract re-entry before this can fire, so
@@ -519,28 +585,24 @@ impl SAS {
             panic_with_error!(&env, SASError::InvalidRefUid);
         }
 
-        let schema_opt: Option<soroban_sas_common::SchemaRecord> = env.invoke_contract(
-            &registry,
-            &Symbol::new(&env, "get_schema"),
-            soroban_sdk::vec![&env, attestation.schema_uid.clone().into_val(&env)],
-        );
+        let schema_opt = match registry_get_schema(&env, &registry, &attestation.schema_uid) {
+            Ok(schema) => schema,
+            Err(error) => panic_with_error!(&env, error),
+        };
         let Some(schema) = schema_opt else {
             panic_with_error!(&env, SASError::InvalidSchema);
         };
 
-        // Verify attester authorization: attester must be either the original
-        // schema owner or an authorized delegate in the registry allow-list (#7).
-        let is_auth: bool = match env.try_invoke_contract::<bool, soroban_sdk::Error>(
+        // Verify attester authorization: a clean `false` is Unauthorized; a
+        // broken registry dependency remains distinguishable and fails closed.
+        let is_auth = match registry_is_authorized(
+            &env,
             &registry,
-            &Symbol::new(&env, "is_authorized"),
-            soroban_sdk::vec![
-                &env,
-                attestation.schema_uid.clone().into_val(&env),
-                attestation.attester.clone().into_val(&env),
-            ],
+            &attestation.schema_uid,
+            &attestation.attester,
         ) {
-            Ok(Ok(auth)) => auth,
-            _ => false,
+            Ok(authorized) => authorized,
+            Err(error) => panic_with_error!(&env, error),
         };
         if !is_auth {
             panic_with_error!(&env, SASError::Unauthorized);
@@ -566,15 +628,13 @@ impl SAS {
         // call would otherwise have published, so the typed error is the
         // only (and sufficient) observable signal here — there is no
         // partial-effect window to additionally report on.
-        if env
-            .try_invoke_contract::<(), soroban_sdk::Error>(
-                &schema.resolver,
-                &Symbol::new(&env, "on_attest"),
-                soroban_sdk::vec![&env, attestation.clone().into_val(&env)],
-            )
-            .is_err()
-        {
-            panic_with_error!(&env, SASError::ResolverRejected);
+        if let Err(error) = require_resolver_acceptance(
+            &env,
+            &schema.resolver,
+            &Symbol::new(&env, "on_attest"),
+            &attestation,
+        ) {
+            panic_with_error!(&env, error);
         }
 
         // Normalize the issuance timestamp to the authoritative ledger close
@@ -743,12 +803,18 @@ impl SAS {
 
         let mut failed = soroban_sdk::Vec::new(&env);
         for uid in uids.iter() {
-            let Some(attestation) = env.storage().persistent().get::<_, Attestation>(&uid) else {
-                failed.push_back(uid);
-                continue;
-            };
-            if Self::try_replay_indexer(&env, &indexer, &attestation) {
-                events::publish_reindexed(&env, &uid);
+            if let Some(attestation) = env.storage().persistent().get::<_, Attestation>(&uid) {
+                let outcome = env.try_invoke_contract::<(), soroban_sdk::Error>(
+                    &indexer,
+                    &soroban_sdk::Symbol::new(&env, "index_attestation"),
+                    soroban_sdk::vec![&env, attestation.into_val(&env)],
+                );
+                if matches!(outcome, Ok(Ok(()))) {
+                    env.events()
+                        .publish((soroban_sas_common::events::REINDEXED, uid), ());
+                } else {
+                    failed.push_back(uid);
+                }
             } else {
                 events::publish_index_failed(&env, &uid);
                 failed.push_back(uid);
@@ -795,18 +861,12 @@ impl SAS {
         authorizer.require_auth();
         if authorizer != attestation.attester {
             let registry = require_registry(&env);
-            let is_auth: bool = match env.try_invoke_contract::<bool, soroban_sdk::Error>(
-                &registry,
-                &Symbol::new(&env, "is_authorized"),
-                soroban_sdk::vec![
-                    &env,
-                    attestation.schema_uid.clone().into_val(&env),
-                    authorizer.clone().into_val(&env),
-                ],
-            ) {
-                Ok(Ok(auth)) => auth,
-                _ => false,
-            };
+            let is_auth =
+                match registry_is_authorized(&env, &registry, &attestation.schema_uid, &authorizer)
+                {
+                    Ok(authorized) => authorized,
+                    Err(error) => panic_with_error!(&env, error),
+                };
             if !is_auth {
                 panic_with_error!(&env, SASError::Unauthorized);
             }
@@ -887,23 +947,20 @@ impl SAS {
         // unaffected and a rejected revocation leaves the attestation
         // exactly as it was.
         let registry = require_registry(&env);
-        let schema_opt: Option<soroban_sas_common::SchemaRecord> = env.invoke_contract(
-            &registry,
-            &Symbol::new(&env, "get_schema"),
-            soroban_sdk::vec![&env, attestation.schema_uid.clone().into_val(&env)],
-        );
+        let schema_opt = match registry_get_schema(&env, &registry, &attestation.schema_uid) {
+            Ok(schema) => schema,
+            Err(error) => panic_with_error!(&env, error),
+        };
         let Some(schema) = schema_opt else {
             panic_with_error!(&env, SASError::InvalidSchema);
         };
-        if env
-            .try_invoke_contract::<(), soroban_sdk::Error>(
-                &schema.resolver,
-                &Symbol::new(&env, "on_revoke"),
-                soroban_sdk::vec![&env, attestation.clone().into_val(&env)],
-            )
-            .is_err()
-        {
-            panic_with_error!(&env, SASError::ResolverRejected);
+        if let Err(error) = require_resolver_acceptance(
+            &env,
+            &schema.resolver,
+            &Symbol::new(&env, "on_revoke"),
+            &attestation,
+        ) {
+            panic_with_error!(&env, error);
         }
 
         // Notify indexer if bound, so revoked status is observable via
@@ -1384,11 +1441,10 @@ impl SAS {
         // Deprecated schemas invalidate previously signed payloads as well,
         // not just new issuance; see doc comment above.
         let registry = require_registry(&env);
-        let schema_opt: Option<soroban_sas_common::SchemaRecord> = env.invoke_contract(
-            &registry,
-            &Symbol::new(&env, "get_schema"),
-            soroban_sdk::vec![&env, attestation.schema_uid.clone().into_val(&env)],
-        );
+        let schema_opt = match registry_get_schema(&env, &registry, &attestation.schema_uid) {
+            Ok(schema) => schema,
+            Err(error) => panic_with_error!(&env, error),
+        };
         if schema_opt.is_none() {
             panic_with_error!(&env, SASError::InvalidSchema);
         }

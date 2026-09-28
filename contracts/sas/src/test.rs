@@ -2732,6 +2732,19 @@ fn test_reindex_attestation_reports_still_unavailable_indexer() {
     assert_eq!(res, Err(Ok(SASError::IndexerUnavailable.into())));
 }
 
+#[test]
+fn test_bulk_reindex_records_contract_level_indexer_failure() {
+    let (env, sas_client, _sas_id, _admin, attester, recipient) = fee_test_env();
+    let trap_id = env.register_contract(None, mock_trap_indexer::TrappingIndexer);
+    sas_client.set_indexer(&trap_id);
+
+    let attestation = attestation_fixture(&env, &attester, &recipient, [51u8; 32]);
+    let uid = sas_client.attest(&attestation);
+
+    let failed = sas_client.bulk_reindex(&soroban_sdk::vec![&env, uid.clone()]);
+    assert_eq!(failed, soroban_sdk::vec![&env, uid]);
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // #157 — Bound attestation payload size
 // ─────────────────────────────────────────────────────────────────────────────

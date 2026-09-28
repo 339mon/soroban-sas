@@ -71,7 +71,9 @@ jobs:
         run: |
           IDENTITY_NAME="ci-integration"
           stellar keys generate "$IDENTITY_NAME" --network standalone --rpc-url "$SOROBAN_RPC_URL" \
-            --network-passphrase "$NETWORK_PASSPHRASE" --fund
+            --network-passphrase "$NETWORK_PASSPHRASE"
+          PUB_KEY="$(stellar keys address "$IDENTITY_NAME")"
+          curl -s "http://localhost:8000/friendbot?addr=$PUB_KEY" > /dev/null
           SECRET_KEY="$(stellar keys show "$IDENTITY_NAME")"
           echo "::add-mask::$SECRET_KEY"
           echo "STELLAR_SECRET_KEY=$SECRET_KEY" >> "$GITHUB_ENV"
