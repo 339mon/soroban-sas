@@ -22,7 +22,7 @@ impl MockRegistry {
     }
 
     #[allow(non_snake_case)]
-    pub fn SASREG(_env: Env) -> bool {
+    pub fn sasreg(_env: Env) -> bool {
         true
     }
 
@@ -52,8 +52,8 @@ fn setup(old_exp: u64) -> Fixture {
     let env = Env::default();
     env.ledger().with_mut(|li| li.timestamp = 5000);
 
-    let registry_id = env.register_contract(None, MockRegistry);
-    let sas_id = env.register_contract(None, SAS);
+    let registry_id = env.register(MockRegistry, ());
+    let sas_id = env.register(SAS, ());
     let sas_client = SASClient::new(&env, &sas_id);
 
     let admin = Address::generate(&env);

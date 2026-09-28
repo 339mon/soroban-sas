@@ -3,7 +3,7 @@ version: "3"
 services:
   stellar-quickstart:
     image: stellar/quickstart:testing@sha256:2182a7558123ff6420ea5516283616634673956530a8edf89796ebe4b58bd784
-    command: --standalone --enable-soroban-rpc
+    command: --standalone --enable-soroban-rpc --protocol-version 22
     ports:
       - "8000:8000"
     volumes:

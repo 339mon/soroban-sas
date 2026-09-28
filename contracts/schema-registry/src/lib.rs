@@ -7,7 +7,7 @@ use soroban_sas_common::{
         CONTRACT_UPGRADED, SCHEMA_DELEGATE_ADDED, SCHEMA_DELEGATE_REMOVED, SCHEMA_DEPRECATED,
         SCHEMA_FEE_UPDATED, SCHEMA_OWNERSHIP_TRANSFERRED, TREASURY_UPDATED,
     },
-    validate_schema_syntax, ContractUpgradedEvent, PreviousAddress, SASError,
+    validate_schema_syntax, ContractUpgradedEvent, Pausable, PreviousAddress, SASError,
     SchemaDelegateAddedEvent, SchemaDelegateRemovedEvent, SchemaDeprecatedEvent,
     SchemaFeeUpdatedEvent, SchemaOwnershipTransferredEvent, SchemaRecord, TreasuryUpdatedEvent,
     LEDGERS_IN_ONE_YEAR, UID,
@@ -16,6 +16,8 @@ use soroban_sdk::{contract, contractimpl, panic_with_error, token, Address, Byte
 
 #[contract]
 pub struct SchemaRegistry;
+
+impl Pausable for SchemaRegistry {}
 
 /// Highest version whose upgrade path this build knows and has been audited
 /// to activate. Genesis `1` -> only `2` is known; expand this allow-list as
@@ -182,6 +184,31 @@ impl SchemaRegistry {
         env.storage().instance().get(&REGISTRY_VERSION).unwrap_or(1)
     }
 
+    /// Emergency stop for schema mutations. Upgrade and unpause remain
+    /// available so an administrator can recover a paused deployment.
+    pub fn pause(env: Env) {
+        extend_instance_ttl(&env);
+        let admin = require_registry_admin(&env);
+        admin.require_auth();
+        <Self as Pausable>::set_paused(&env, &admin);
+        extend_instance_ttl(&env);
+    }
+
+    /// Resumes schema mutations after an emergency pause.
+    pub fn unpause(env: Env) {
+        extend_instance_ttl(&env);
+        let admin = require_registry_admin(&env);
+        admin.require_auth();
+        <Self as Pausable>::set_unpaused(&env, &admin);
+        extend_instance_ttl(&env);
+    }
+
+    /// Returns the current emergency-stop state.
+    pub fn is_paused(env: Env) -> bool {
+        extend_instance_ttl(&env);
+        <Self as Pausable>::is_paused(&env)
+    }
+
     /// Versioned upgrade. Validates the candidate before activation:
     ///  - the registry admin must still be readable
     ///  - `new_version` must be exactly `current + 1` (no skips/downgrades)
@@ -226,6 +253,7 @@ impl SchemaRegistry {
     /// time a fee is set) after the new fee has already been written to
     /// storage.
     pub fn set_fee(env: Env, token: Address, amount: i128) {
+        <Self as Pausable>::require_not_paused(&env);
         extend_instance_ttl(&env);
         let admin = require_registry_admin(&env);
         admin.require_auth();
@@ -259,6 +287,7 @@ impl SchemaRegistry {
     /// `register_with_value` called with `value == 0`) are free again.
     /// Requires the registry admin's authorization.
     pub fn clear_fee(env: Env) {
+        <Self as Pausable>::require_not_paused(&env);
         extend_instance_ttl(&env);
         let admin = require_registry_admin(&env);
         admin.require_auth();
@@ -283,6 +312,7 @@ impl SchemaRegistry {
     /// previous treasury (`None` the first time a treasury is set) after
     /// the new address has already been written to storage.
     pub fn set_treasury(env: Env, treasury: soroban_sdk::Address) {
+        <Self as Pausable>::require_not_paused(&env);
         extend_instance_ttl(&env);
         let admin = require_registry_admin(&env);
         admin.require_auth();
@@ -302,6 +332,7 @@ impl SchemaRegistry {
     }
 
     pub fn withdraw_fees(env: Env, amount: i128) {
+        <Self as Pausable>::require_not_paused(&env);
         extend_instance_ttl(&env);
         let admin = require_registry_admin(&env);
         admin.require_auth();
@@ -313,6 +344,7 @@ impl SchemaRegistry {
     /// Panics NotInitialized if not init, SchemaNotFound if uid unknown
     /// (no tombstone written). Repeated calls are idempotent.
     pub fn deprecate(env: Env, uid: UID, authorizer: Address) {
+        <Self as Pausable>::require_not_paused(&env);
         extend_instance_ttl(&env);
         let admin = require_registry_admin(&env);
 
@@ -362,6 +394,7 @@ impl SchemaRegistry {
     /// Requires authorization from the primary schema owner (creator).
     /// Emits `SchemaDelegateAdded`.
     pub fn add_delegate(env: Env, uid: UID, delegate: Address) {
+        <Self as Pausable>::require_not_paused(&env);
         extend_instance_ttl(&env);
         if !env.storage().persistent().has(&uid) {
             panic_with_error!(&env, SASError::SchemaNotFound);
@@ -400,6 +433,7 @@ impl SchemaRegistry {
     /// Requires authorization from the primary schema owner (creator).
     /// Emits `SchemaDelegateRemoved`.
     pub fn remove_delegate(env: Env, uid: UID, delegate: Address) {
+        <Self as Pausable>::require_not_paused(&env);
         extend_instance_ttl(&env);
         if !env.storage().persistent().has(&uid) {
             panic_with_error!(&env, SASError::SchemaNotFound);
@@ -435,6 +469,7 @@ impl SchemaRegistry {
     /// schemas (`SASError::InvalidSchema`).
     /// Emits `SchemaOwnershipTransferred`.
     pub fn transfer_schema_ownership(env: Env, uid: UID, new_owner: Address) {
+        <Self as Pausable>::require_not_paused(&env);
         extend_instance_ttl(&env);
         if !env.storage().persistent().has(&uid) {
             panic_with_error!(&env, SASError::SchemaNotFound);
@@ -482,6 +517,7 @@ impl SchemaRegistry {
     /// See `docs/schemas.md` for the schema syntax specification.
 
     pub fn transfer_ownership(env: Env, sender: Address, uid: UID, new_owner: Address) {
+        <Self as Pausable>::require_not_paused(&env);
         sender.require_auth();
         extend_instance_ttl(&env);
 
@@ -525,6 +561,7 @@ impl SchemaRegistry {
     }
 
     pub fn deprecate_schema(env: Env, sender: Address, uid: UID) {
+        <Self as Pausable>::require_not_paused(&env);
         sender.require_auth();
         extend_instance_ttl(&env);
 
@@ -566,6 +603,7 @@ impl SchemaRegistry {
         resolver: Address,
         revocable: bool,
     ) -> UID {
+        <Self as Pausable>::require_not_paused(&env);
         // The owner must authorize the registration so the emitted event
         // carries a caller identity that off-chain indexers can trust.
         owner.require_auth();
@@ -593,6 +631,7 @@ impl SchemaRegistry {
         token: Address,
         value: i128,
     ) -> UID {
+        <Self as Pausable>::require_not_paused(&env);
         if value < 0 {
             panic_with_error!(&env, SASError::InvalidValue);
         }

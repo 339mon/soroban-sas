@@ -19,7 +19,7 @@ pub mod mock_registry {
             true
         }
         #[allow(non_snake_case)]
-        pub fn SASREG(_env: Env) -> bool {
+        pub fn sasreg(_env: Env) -> bool {
             true
         }
         pub fn get_schema(env: Env, uid: UID) -> Option<SchemaRecord> {
@@ -176,8 +176,8 @@ fn broken_registry_authorization_is_not_misreported_as_unauthorized() {
 #[test]
 fn test_verify_offchain_rejects_unknown_and_deprecated_schema() {
     let env = Env::default();
-    let registry_id = env.register_contract(None, mock_registry::MockRegistry);
-    let sas_id = env.register_contract(None, SAS);
+    let registry_id = env.register(mock_registry::MockRegistry, ());
+    let sas_id = env.register(SAS, ());
     let sas_client = SASClient::new(&env, &sas_id);
     let admin = Address::generate(&env);
     env.mock_all_auths();
@@ -319,8 +319,8 @@ mod revocability {
         let env = Env::default();
         env.mock_all_auths();
 
-        let registry_id = env.register_contract(None, mock_registry::MockRegistry);
-        let sas_id = env.register_contract(None, SAS);
+        let registry_id = env.register(mock_registry::MockRegistry, ());
+        let sas_id = env.register(SAS, ());
         let sas_client = SASClient::new(&env, &sas_id);
         let admin = Address::generate(&env);
         sas_client.init(&admin, &registry_id);
@@ -329,7 +329,7 @@ mod revocability {
         let recipient = Address::generate(&env);
 
         let schema_uid = UID(BytesN::from_array(&env, &[9u8; 32]));
-        let resolver = env.register_contract(None, noop_resolver::NoopResolver);
+        let resolver = env.register(noop_resolver::NoopResolver, ());
         let record = SchemaRecord {
             uid: schema_uid.clone(),
             resolver,
@@ -740,9 +740,9 @@ mod resolver_semantics {
         let env = Env::default();
         env.mock_all_auths();
 
-        let registry_id = env.register_contract(None, mock_registry::MockRegistry);
-        let resolver_id = env.register_contract(None, resolver);
-        let sas_id = env.register_contract(None, SAS);
+        let registry_id = env.register(mock_registry::MockRegistry, ());
+        let resolver_id = env.register(resolver, ());
+        let sas_id = env.register(SAS, ());
         let sas_client = SASClient::new(&env, &sas_id);
         let admin = Address::generate(&env);
         sas_client.init(&admin, &registry_id);
@@ -879,9 +879,7 @@ mod resolver_semantics {
 
         // Point a second schema at a rejecting resolver, and try to replace
         // the old attestation with one issued under it.
-        let rejecting_id = fx
-            .env
-            .register_contract(None, rejecting_resolver::RejectingResolver);
+        let rejecting_id = fx.env.register(rejecting_resolver::RejectingResolver, ());
         let rejecting_schema_uid = UID(BytesN::from_array(&fx.env, &[22u8; 32]));
         let rejecting_record = SchemaRecord {
             uid: rejecting_schema_uid.clone(),
@@ -1007,9 +1005,9 @@ mod revoke_resolver_semantics {
         let env = Env::default();
         env.mock_all_auths();
 
-        let registry_id = env.register_contract(None, mock_registry::MockRegistry);
-        let resolver_id = env.register_contract(None, resolver);
-        let sas_id = env.register_contract(None, SAS);
+        let registry_id = env.register(mock_registry::MockRegistry, ());
+        let resolver_id = env.register(resolver, ());
+        let sas_id = env.register(SAS, ());
         let sas_client = SASClient::new(&env, &sas_id);
         let admin = Address::generate(&env);
         sas_client.init(&admin, &registry_id);
@@ -1136,7 +1134,7 @@ mod revoke_resolver_semantics {
 #[test]
 fn test_set_indexer_before_init_returns_not_initialized() {
     let env = Env::default();
-    let sas_id = env.register_contract(None, SAS);
+    let sas_id = env.register(SAS, ());
     let sas_client = SASClient::new(&env, &sas_id);
     let indexer = Address::generate(&env);
 
@@ -1144,7 +1142,7 @@ fn test_set_indexer_before_init_returns_not_initialized() {
     let res = sas_client.try_set_indexer(&indexer);
     assert_eq!(res, Err(Ok(SASError::NotInitialized.into())));
 
-    let registry_id = env.register_contract(None, mock_registry::MockRegistry);
+    let registry_id = env.register(mock_registry::MockRegistry, ());
     let admin = Address::generate(&env);
     sas_client.init(&admin, &registry_id);
 
@@ -1161,7 +1159,7 @@ fn test_set_indexer_before_init_returns_not_initialized() {
 #[test]
 fn test_attest_before_init_returns_not_initialized() {
     let env = Env::default();
-    let sas_id = env.register_contract(None, SAS);
+    let sas_id = env.register(SAS, ());
     let sas_client = SASClient::new(&env, &sas_id);
 
     let attestation = Attestation {

@@ -97,6 +97,35 @@ When running under default fail-open mode, any downstream indexing failures emit
 For operational instructions covering event detection, unreconciled UID enumeration, CLI/SDK invocation, health checks, and retry strategies, see the [Indexer Reconciliation Runbook](reconciliation.md) and [Indexer Availability Policy](indexer-availability-and-fees.md).
 
 
+## Shared Emergency Pause
+
+`SAS`, `SchemaRegistry`, and `Indexer` implement the shared
+`soroban_sas_common::Pausable` trait. The trait owns the common instance
+storage key, standardized `ContractPaused` / `ContractUnpaused` events, and
+the `ContractPaused` write guard. Each contract keeps its own admin
+authorization at the public `pause` / `unpause` boundary.
+
+A pause is deliberately a **business-write circuit breaker**, not a contract
+shutdown. Read-only queries remain available, as do `unpause` and versioned
+upgrade entry points, so operators can diagnose and recover a deployment.
+SAS issuance/revocation/key-management writes, schema-registry mutations, and
+indexer writes reject while paused.
+
+## Indexer Complex Queries
+
+The Indexer stores the canonical SAS issuance timestamp beside each indexed
+UID. `IndexQueryFilter` combines inclusive `from_time` / `to_time` bounds with
+`include_revoked`, and the recipient/schema/attester query entry points return
+`IndexQueryPage { uids, next_cursor }`. The cursor is a raw offset into the
+append-only historical index rather than a count of matching rows, so callers
+must resume with the returned `next_cursor`; this avoids duplicate/skip bugs
+when filters exclude rows. Each page is capped to one physical index chunk.
+
+Legacy indexed UIDs that predate timestamp metadata remain visible to
+unbounded queries. Bounded time queries omit them until an operator replays
+the canonical SAS record; `reindex_attestation` / `bulk_reindex` backfill the
+original issuance timestamp without duplicating the append-only index entry.
+
 ## Attestation Lifecycle and State Machine
 
 An attestation within the Soroban SAS framework flows through several definitive states managed strictly by the core SAS smart contract:

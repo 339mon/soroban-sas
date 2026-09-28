@@ -89,6 +89,25 @@ fn run(dir: &Path, program: &str, args: &[&str]) -> String {
     String::from_utf8_lossy(&output.stdout).trim().to_string()
 }
 
+/// Runs a Stellar CLI transaction with the funded secret provided through
+/// `STELLAR_ACCOUNT`, keeping it out of argv and avoiding interactive key
+/// import prompts that changed across Stellar CLI versions.
+fn run_with_source(dir: &Path, program: &str, args: &[&str], source_account: &str) -> String {
+    let output = Command::new(program)
+        .args(args)
+        .env("STELLAR_ACCOUNT", source_account)
+        .current_dir(dir)
+        .output()
+        .unwrap_or_else(|e| panic!("failed to spawn `{program} {}`: {e}", args.join(" ")));
+    if !output.status.success() {
+        panic!(
+            "`{program} {}` failed:\nstdout: {}\nstderr: {}",
+            args.join(" "),
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        );
+    }
+    String::from_utf8_lossy(&output.stdout).trim().to_string()
 /// Registers a throwaway CLI identity for `secret` and returns its name, so
 /// every deploy/invoke call below can use `--source-account <name>` exactly
 /// like scripts/deploy.sh does. The identity is left registered for the
@@ -115,22 +134,26 @@ fn register_identity(secret: &str) -> String {
     name
 }
 
-fn net_args<'a>(identity: &'a str, rpc: &'a str, passphrase: &'a str) -> Vec<&'a str> {
-    vec![
-        "--source-account",
-        identity,
-        "--rpc-url",
-        rpc,
-        "--network-passphrase",
-        passphrase,
-    ]
+fn net_args<'a>(rpc: &'a str, passphrase: &'a str) -> Vec<&'a str> {
+    vec!["--rpc-url", rpc, "--network-passphrase", passphrase]
 }
 
-fn deploy_contract(dir: &Path, wasm: &Path, identity: &str, rpc: &str, passphrase: &str) -> String {
+fn recipient_address() -> String {
+    let seed = [0x42u8; 32];
+    stellar_strkey::ed25519::PublicKey(derive_public_key(&seed)).to_string()
+}
+
+fn deploy_contract(
+    dir: &Path,
+    wasm: &Path,
+    source_account: &str,
+    rpc: &str,
+    passphrase: &str,
+) -> String {
     let wasm_str = wasm.to_string_lossy().to_string();
     let mut args = vec!["contract", "deploy", "--wasm", wasm_str.as_str()];
-    args.extend(net_args(identity, rpc, passphrase));
-    let out = run(dir, stellar_cli(), &args);
+    args.extend(net_args(rpc, passphrase));
+    let out = run_with_source(dir, stellar_cli(), &args, source_account);
     let id = out.lines().last().unwrap_or("").trim().to_string();
     assert!(
         id.starts_with('C'),
@@ -142,16 +165,16 @@ fn deploy_contract(dir: &Path, wasm: &Path, identity: &str, rpc: &str, passphras
 fn invoke(
     dir: &Path,
     contract_id: &str,
-    identity: &str,
+    source_account: &str,
     rpc: &str,
     passphrase: &str,
     call_args: &[&str],
 ) -> String {
     let mut args = vec!["contract", "invoke", "--id", contract_id];
-    args.extend(net_args(identity, rpc, passphrase));
+    args.extend(net_args(rpc, passphrase));
     args.push("--");
     args.extend_from_slice(call_args);
-    run(dir, stellar_cli(), &args)
+    run_with_source(dir, stellar_cli(), &args, source_account)
 }
 
 /// Builds the three contracts' release WASM (skipped if already built),
@@ -169,7 +192,7 @@ fn deploy_stack(secret: &str) -> (String, String, String, String) {
     let admin = admin_address(secret);
 
     fund_account(&admin);
-    let identity = register_identity(secret);
+    let source_account = secret;
 
     run(
         &root,
@@ -194,28 +217,28 @@ fn deploy_stack(secret: &str) -> (String, String, String, String) {
     let registry_id = deploy_contract(
         &root,
         &wasm_dir.join("schema_registry.wasm"),
-        &identity,
+        source_account,
         &rpc,
         &passphrase,
     );
     let sas_id = deploy_contract(
         &root,
         &wasm_dir.join("sas.wasm"),
-        &identity,
+        source_account,
         &rpc,
         &passphrase,
     );
     let indexer_id = deploy_contract(
         &root,
         &wasm_dir.join("soroban_sas_indexer.wasm"),
-        &identity,
+        source_account,
         &rpc,
         &passphrase,
     );
     let resolver_id = deploy_contract(
         &root,
         &wasm_dir.join("permissive_resolver.wasm"),
-        &identity,
+        source_account,
         &rpc,
         &passphrase,
     );
@@ -223,7 +246,7 @@ fn deploy_stack(secret: &str) -> (String, String, String, String) {
     invoke(
         &root,
         &registry_id,
-        &identity,
+        source_account,
         &rpc,
         &passphrase,
         &["init", "--admin", &admin],
@@ -231,7 +254,7 @@ fn deploy_stack(secret: &str) -> (String, String, String, String) {
     invoke(
         &root,
         &sas_id,
-        &identity,
+        source_account,
         &rpc,
         &passphrase,
         &["init", "--admin", &admin, "--registry", &registry_id],
@@ -239,7 +262,7 @@ fn deploy_stack(secret: &str) -> (String, String, String, String) {
     invoke(
         &root,
         &indexer_id,
-        &identity,
+        source_account,
         &rpc,
         &passphrase,
         &["init", "--admin", &admin, "--sas", &sas_id],
@@ -247,7 +270,7 @@ fn deploy_stack(secret: &str) -> (String, String, String, String) {
     invoke(
         &root,
         &sas_id,
-        &identity,
+        source_account,
         &rpc,
         &passphrase,
         &["set_indexer", "--indexer", &indexer_id],
@@ -273,6 +296,7 @@ async fn schema_registration_attest_revoke_and_indexer_lookup() {
     let passphrase = network_passphrase();
     let secret = parse_secret_seed(&secret_key());
     let admin = admin_address(&secret_key());
+    let recipient = recipient_address();
     let sas_client = SASClient::new(sas_id.clone());
 
     // 1. Schema registration.
@@ -292,10 +316,11 @@ async fn schema_registration_attest_revoke_and_indexer_lookup() {
         soroban_sdk::Address::from_string(&soroban_sdk::String::from_str(&env, &resolver_id));
     let schema_uid = SASClient::compute_schema_uid(&env, "bool verified", &resolver_address, true);
 
-    // 2. Attestation issuance: self-attest (admin is both attester and recipient).
+    // 2. Attestation issuance: the funded admin attests about a distinct
+    // recipient, matching the contract's self-attestation rejection rule.
     let attestation = AttestationRequestBuilder::new()
         .with_schema_uid(schema_uid.0.to_array())
-        .with_recipient(&admin)
+        .with_recipient(&recipient)
         .with_attester(&admin)
         .with_data(Bytes::from_slice(&env, b"integration test payload"))
         .build(&env)
@@ -316,11 +341,11 @@ async fn schema_registration_attest_revoke_and_indexer_lookup() {
         "freshly issued attestation must not be revoked"
     );
 
-    // 3. Indexer reverse lookup: the admin's own attestation must be
-    // discoverable by recipient without knowing its UID in advance.
+    // 3. Indexer reverse lookup: the attestation must be discoverable by
+    // its recipient without knowing the UID in advance.
     let indexer_client = IndexerClient::new(indexer_id);
     let by_recipient = indexer_client
-        .get_attestations_by_recipient(&env, &rpc, &admin)
+        .get_attestations_by_recipient(&env, &rpc, &recipient)
         .expect("get_attestations_by_recipient failed");
     assert!(
         by_recipient.iter().any(|u| u.0.to_array() == uid),
@@ -357,10 +382,10 @@ async fn sac_fee_deduction_on_attest_with_value() {
     let rpc_str = rpc_url();
     let passphrase = network_passphrase();
     let secret_string = secret_key();
-    let identity = register_identity(&secret_string);
+    let source_account = secret_string.as_str();
 
     // Deploy (or reuse) the native XLM Stellar Asset Contract wrapper.
-    let token_id = run(
+    let token_id = run_with_source(
         &root,
         stellar_cli(),
         &[
@@ -369,13 +394,12 @@ async fn sac_fee_deduction_on_attest_with_value() {
             "deploy",
             "--asset",
             "native",
-            "--source-account",
-            &identity,
             "--rpc-url",
             &rpc_str,
             "--network-passphrase",
             &passphrase,
         ],
+        source_account,
     )
     .lines()
     .last()
@@ -393,6 +417,7 @@ async fn sac_fee_deduction_on_attest_with_value() {
     let rpc = RpcClient::new(rpc_str.clone());
     let secret = parse_secret_seed(&secret_string);
     let admin = admin_address(&secret_string);
+    let recipient = recipient_address();
     let sas_client = SASClient::new(sas_id.clone());
 
     sas_client
@@ -418,7 +443,7 @@ async fn sac_fee_deduction_on_attest_with_value() {
     let balance_before: i128 = invoke(
         &root,
         &token_id,
-        &identity,
+        source_account,
         &rpc_str,
         &passphrase,
         &["balance", "--id", &sas_id],
@@ -430,7 +455,7 @@ async fn sac_fee_deduction_on_attest_with_value() {
 
     let attestation = AttestationRequestBuilder::new()
         .with_schema_uid(schema_uid.0.to_array())
-        .with_recipient(&admin)
+        .with_recipient(&recipient)
         .with_attester(&admin)
         .with_data(Bytes::from_slice(&env, b"paid attestation"))
         .build(&env)
@@ -451,7 +476,7 @@ async fn sac_fee_deduction_on_attest_with_value() {
     let balance_after: i128 = invoke(
         &root,
         &token_id,
-        &identity,
+        source_account,
         &rpc_str,
         &passphrase,
         &["balance", "--id", &sas_id],
