@@ -36,7 +36,7 @@ The rest of this guide explains each step and what to do when one fails.
 | Git | any recent | everything | <https://git-scm.com> |
 | Rust (rustup) | `1.79.0`, pinned by `rust-toolchain.toml` | building and testing | <https://rustup.rs> |
 | `wasm32-unknown-unknown` target | matches the toolchain | building contract WASM | `./scripts/bootstrap.sh --install` |
-| Stellar CLI (`stellar`) | `28.0.0`, pinned by `scripts/bootstrap.sh` | deploying and invoking contracts | `./scripts/bootstrap.sh --install` |
+| Stellar CLI (`stellar`) | `28.0.0` (what `scripts/bootstrap.sh` installs) | deploying and invoking contracts | `./scripts/bootstrap.sh --install` |
 | Docker (with Compose v2) | any recent | the local network | <https://docs.docker.com/get-docker/> |
 | Node.js | 18+ (CI uses 20) | `packages/soroban-sas-js`, `tools/schema-explorer` only | <https://nodejs.org> |
 | Python 3 | 3.8+ | `scripts/check_docs.sh` only | <https://www.python.org> |
@@ -48,23 +48,23 @@ it.
 **Windows.** Every script in `scripts/` is a bash script. Use
 [WSL 2](https://learn.microsoft.com/windows/wsl/) (recommended), or the Git
 Bash shell that ships with Git for Windows. The repository's
-`.gitattributes` keeps `*.sh` and `.githooks/*` on LF line endings, so they
-run even when `core.autocrlf` is on. Expect the first workspace build to take
-10–20 minutes.
+`.gitattributes` keeps `*.sh`, `.githooks/*` and `*.rs` on LF line endings.
+The scripts therefore run, and `cargo fmt --check` passes
+(`rustfmt.toml` requires Unix newlines), even when `core.autocrlf` is on.
+Expect the first workspace build to take 10–20 minutes.
 
 ## 2. Bootstrap the toolchain
 
-`scripts/bootstrap.sh` has three modes, and it only changes your machine
-when you pass `--install`:
-
 ```bash
-./scripts/bootstrap.sh              # report what is installed, change nothing
-./scripts/bootstrap.sh --install    # add the wasm target, install the pinned Stellar CLI
-./scripts/bootstrap.sh --check      # exit 1 if anything is missing (CI-friendly)
+./scripts/bootstrap.sh --install
 ```
 
-`--install` is idempotent: a second run does nothing. To pin a different
-Stellar CLI version, set `STELLAR_CLI_VERSION=<x.y.z>`.
+The script checks that `rustup` and `cargo` exist, adds the
+`wasm32-unknown-unknown` target if it's missing, and installs `stellar-cli`
+with `cargo install --locked` if neither `stellar` nor `soroban` is on
+`PATH`. Running it again is safe. It doesn't upgrade a CLI you already have,
+so check yours with `stellar --version`. To install a different version, set
+`STELLAR_CLI_VERSION=<x.y.z>`.
 
 ## 3. Build and test
 
@@ -256,7 +256,7 @@ cargo test --test integration -- --ignored --test-threads=1
 ```
 
 [DEVELOPER_RUNBOOK.md](../DEVELOPER_RUNBOOK.md) describes what each test
-covers and how CI runs the suite.
+covers.
 
 ## 8. JavaScript packages
 
@@ -307,5 +307,5 @@ check a schema string before you register it.
 | `wait_for_localnet.sh` times out | Run `docker compose ps` and `docker compose logs stellar-quickstart`. The first start downloads history and can take a minute or two. Make sure nothing else is listening on port 8000. |
 | `deploy.sh`: `neither 'soroban' nor 'stellar' CLI found` | `./scripts/bootstrap.sh --install`, then open a new shell |
 | `deploy.sh`: account not found / `txNoAccount` | The account isn't funded. Rerun `stellar keys generate ... --fund`, or `curl "http://localhost:8000/friendbot?addr=$(stellar keys address local-admin)"`. |
-| Contract calls fail with a version or XDR mismatch | Your CLI and the node disagree on the protocol. Check the compatibility matrix in [DEPLOYMENT.md](DEPLOYMENT.md#protocol-and-toolchain-compatibility-matrix), and `./scripts/bootstrap.sh --check`. |
+| Contract calls fail with a version or XDR mismatch | Your CLI and the node disagree on the protocol. Compare `stellar --version` with the compatibility matrix in [DEPLOYMENT.md](DEPLOYMENT.md#protocol-and-toolchain-compatibility-matrix). |
 | `attest` fails with `Error(Contract, #409)` (`ResolverRejected`) | The schema's resolver is not a deployed contract implementing `on_attest`. Use the permissive resolver [above](#make-attestations-work-end-to-end) for local testing. |
