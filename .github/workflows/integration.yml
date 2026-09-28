@@ -17,20 +17,7 @@ jobs:
     name: Integration (live Soroban RPC node)
     runs-on: ubuntu-latest
 
-    services:
-      stellar-quickstart:
-        image: stellar/quickstart:testing
-        options: >-
-          --health-cmd "curl -s -f -X POST -H 'Content-Type: application/json' -d '{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"getHealth\"}' http://localhost:8000/soroban/rpc | grep -q '\"status\":[[:space:]]*\"healthy\"'"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 30
-          --health-start-period 10s
-        ports:
-          - 8000:8000
-        # Mirrors docker-compose.yml's `command: --standalone --enable-soroban-rpc`.
-        env:
-          ENABLE_SOROBAN_RPC: "true"
+
 
     steps:
       - uses: actions/checkout@v4.1.0
@@ -53,8 +40,17 @@ jobs:
             ${{ runner.os }}-cargo-integration-
             ${{ runner.os }}-cargo-
 
+      - name: Install cargo-binstall
+        uses: taiki-e/install-action@cargo-binstall
       - name: Install stellar-cli
-        run: cargo install --locked stellar-cli --version ^22
+        run: cargo binstall -y stellar-cli@21.4.0 --bin stellar
+
+      - name: Start stellar-quickstart
+        run: |
+          docker run -d --name stellar-quickstart -p 8000:8000 \
+            -e ENABLE_SOROBAN_RPC=true \
+            stellar/quickstart:testing \
+            --standalone --enable-soroban-rpc
 
       - name: Wait for Soroban RPC readiness
         run: |
