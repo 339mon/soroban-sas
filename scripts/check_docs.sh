@@ -80,8 +80,8 @@ fi
 # -----------------------------------------------------------------------------
 info "Checking clone URLs and tooling recommendations..."
 
-if grep -q "github.com/0xVida/soroban-sas" README.md; then
-    fail "Outdated clone URL '0xVida/soroban-sas' in README.md"
+if grep -q "github.com/ModeCodes/soroban-sas" README.md; then
+    fail "Outdated clone URL 'ModeCodes/soroban-sas' in README.md"
 else
     pass "Clone URL matches authoritative repository (Soroban-Eas/soroban-sas)"
 fi

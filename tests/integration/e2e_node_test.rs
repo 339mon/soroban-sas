@@ -94,25 +94,7 @@ fn run(dir: &Path, program: &str, args: &[&str]) -> String {
 /// like scripts/deploy.sh does. The identity is left registered for the
 /// duration of the test process (harmless in a disposable CI container).
 fn register_identity(secret: &str) -> String {
-    let name = format!("integration-test-{}", std::process::id());
-    
-    // In stellar-cli v22, `stellar keys add` requires a TTY and fails from stdin.
-    // So we manually write the config TOML to bypass the bug.
-    let config_dir = std::env::var("XDG_CONFIG_HOME")
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|_| {
-            let home = std::env::var("HOME").expect("HOME env var not set");
-            std::path::PathBuf::from(home).join(".config")
-        })
-        .join("stellar")
-        .join("identities");
-        
-    std::fs::create_dir_all(&config_dir).expect("failed to create stellar identities dir");
-    
-    let toml = format!("secret_key = \"{secret}\"\n");
-    std::fs::write(config_dir.join(&name), toml).expect("failed to write identity file");
-    
-    name
+    secret.to_string()
 }
 
 fn net_args<'a>(identity: &'a str, rpc: &'a str, passphrase: &'a str) -> Vec<&'a str> {
