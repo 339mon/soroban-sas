@@ -86,6 +86,14 @@ The workspace has evolved beyond initial mocks and now includes comprehensive do
 - `scripts/`
   A collection of shell scripts to assist with local environment setup, contract deployment, and invocation.
 
+- `tools/schema-explorer`
+  A prototype read-only web dashboard for browsing a Schema Registry and validating draft schemas.
+  See the [Schema Explorer README](tools/schema-explorer/README.md).
+
+- `.githooks/`
+  Opt-in `pre-commit` and `pre-push` hooks that run CI's formatting and lint checks locally.
+  Enable them with `./scripts/install_hooks.sh`.
+
 ## Command-Line Interface
 
 All commands support `--output human` (default) or `--output json` for machine-readable output.
@@ -216,6 +224,11 @@ network call or funded key, and prints usage with `--help`.
 
 ## Getting Started
 
+- **Building an app on soroban-sas?** Follow [Getting Started for DApp Developers](docs/getting-started.md):
+  register a schema, issue, verify, query and revoke an attestation.
+- **Contributing to this repository?** [Local Development Environment](docs/local-development.md)
+  covers the toolchain, tests, git hooks, a local Stellar node and local deployment.
+
 ### System Requirements
 
 - A recent stable version of the Rust toolchain (pinned to `1.79.0` via `rust-toolchain.toml`).
@@ -250,6 +263,12 @@ TMPDIR=/tmp cargo test --workspace
 
 ## Documentation
 
+- [Getting Started for DApp Developers](docs/getting-started.md): schema
+  design, resolvers, issuance rules, off-chain and on-chain verification,
+  indexer queries, and a security checklist.
+- [Local Development Environment](docs/local-development.md): toolchain,
+  build and test, git hooks, local network, local deployment, and
+  troubleshooting.
 - Documentation on Schema Syntax and Payloads: `docs/schemas.md`
 - [Attestation Lifecycle](docs/attestations.md): issuance, expiration,
   revocation, and replacement semantics, including `replace_attestation`'s

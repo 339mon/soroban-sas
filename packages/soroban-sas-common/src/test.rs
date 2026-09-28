@@ -117,6 +117,51 @@ fn test_validate_schema_syntax_rejects_malformed_strings() {
     assert!(validate_schema_syntax(&env, &schema).is_ok());
 }
 
+/// Replays the shared golden vectors in `test_vectors/schema_syntax.tsv`.
+/// The schema explorer's TypeScript validator replays the same file, so a
+/// rule change here that is not mirrored there (or vice versa) fails CI.
+#[test]
+fn test_validate_schema_syntax_matches_shared_vectors() {
+    extern crate std;
+    use std::string::String as StdString;
+
+    fn decode_hex(hex: &str) -> std::vec::Vec<u8> {
+        assert!(hex.len() % 2 == 0, "odd-length hex in schema vector");
+        (0..hex.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).expect("invalid hex in schema vector"))
+            .collect()
+    }
+
+    let env = Env::default();
+    let vectors = include_str!("../test_vectors/schema_syntax.tsv");
+    let mut checked = 0;
+    for line in vectors.lines() {
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let mut columns = line.split('\t');
+        let expected = columns.next().expect("missing expected column");
+        let bytes = decode_hex(columns.next().expect("missing schema column"));
+        let text = StdString::from_utf8(bytes).expect("schema vector is not UTF-8");
+        let schema = soroban_sdk::String::from_str(&env, &text);
+
+        let expected = match expected {
+            "ok" => Ok(()),
+            "InvalidSchema" => Err(crate::errors::SASError::InvalidSchema),
+            "EmptySchema" => Err(crate::errors::SASError::EmptySchema),
+            other => panic!("unknown expected result {other:?} in schema vector"),
+        };
+        assert_eq!(
+            validate_schema_syntax(&env, &schema),
+            expected,
+            "schema vector {text:?}"
+        );
+        checked += 1;
+    }
+    assert!(checked > 0, "no schema vectors were checked");
+}
+
 #[test]
 fn test_validate_schema_syntax_enforces_max_field_count() {
     extern crate std;
