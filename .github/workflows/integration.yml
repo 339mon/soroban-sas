@@ -43,13 +43,13 @@ jobs:
       - name: Install cargo-binstall
         uses: taiki-e/install-action@cargo-binstall
       - name: Install stellar-cli
-        run: cargo binstall -y stellar-cli@21.4.0 --bin stellar
+        run: cargo binstall -y stellar-cli@22.0.1 --bin stellar
 
       - name: Start stellar-quickstart
         run: |
           docker run -d --name stellar-quickstart -p 8000:8000 \
             -e ENABLE_SOROBAN_RPC=true \
-            stellar/quickstart:testing@sha256:2182a7558123ff6420ea5516283616634673956530a8edf89796ebe4b58bd784 \
+            stellar/quickstart:testing \
             --standalone --enable-soroban-rpc
 
       - name: Wait for Soroban RPC readiness
@@ -71,9 +71,7 @@ jobs:
         run: |
           IDENTITY_NAME="ci-integration"
           stellar keys generate "$IDENTITY_NAME" --network standalone --rpc-url "$SOROBAN_RPC_URL" \
-            --network-passphrase "$NETWORK_PASSPHRASE"
-          PUB_KEY="$(stellar keys address "$IDENTITY_NAME")"
-          curl -s "http://localhost:8000/friendbot?addr=$PUB_KEY" > /dev/null
+            --network-passphrase "$NETWORK_PASSPHRASE" --fund
           SECRET_KEY="$(stellar keys show "$IDENTITY_NAME")"
           echo "::add-mask::$SECRET_KEY"
           echo "STELLAR_SECRET_KEY=$SECRET_KEY" >> "$GITHUB_ENV"
