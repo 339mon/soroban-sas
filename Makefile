@@ -1,4 +1,4 @@
-.PHONY: all build build-contracts build-native test bench clean print-contract-artifacts \
+.PHONY: all build build-contracts build-native test bench smoke-local clean print-contract-artifacts \
 	fmt lint install-hooks localnet localnet-down deploy-local
 
 CONTRACT_PACKAGES := schema-registry sas soroban-sas-indexer
@@ -33,6 +33,9 @@ print-contract-artifacts:
 
 test:
 	cargo test --workspace
+
+smoke-local:
+	bash ./scripts/docker_smoke_test.sh
 
 fmt:
 	cargo fmt --all

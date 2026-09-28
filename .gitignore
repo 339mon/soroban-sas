@@ -13,3 +13,4 @@ cargo_err.log
 
 /fuzz/target/
 /fuzz/artifacts/
+*.swp

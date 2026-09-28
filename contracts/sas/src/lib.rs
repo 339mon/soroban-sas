@@ -979,6 +979,82 @@ impl SAS {
         issued_uid
     }
 
+    /// Extends the expiration time of an existing attestation without revoking
+    /// and re-issuing it. The attestation keeps its original UID.
+    ///
+    /// Requires authorization from the original attester (or an authorized
+    /// delegate/schema owner via `revoke_by_authorizer` semantics). The
+    /// attestation must be revocable and not already revoked. The new
+    /// `expiration_time` must extend or maintain the current expiration:
+    /// - If the current `expiration_time` is 0 (perpetual), it stays 0.
+    /// - If the current `expiration_time` is non-zero, the new value must be
+    ///   either 0 (perpetual) or >= the current expiration time.
+    /// - Shortening the expiration is rejected with `SASError::InvalidTTL`.
+    ///
+    /// On success, updates the attestation's `expiration_time`, extends its
+    /// storage TTL accordingly, and emits an `AttestationRenewed` event.
+    /// The resolver's `on_revoke` is NOT invoked (this is not a revocation).
+    pub fn renew_attestation(env: Env, uid: UID, new_expiration_time: u64) -> UID {
+        if is_paused_status(&env) {
+            panic_with_error!(&env, SASError::ContractPaused);
+        }
+        extend_instance_ttl(&env);
+        let Some(mut attestation) = env.storage().persistent().get::<_, Attestation>(&uid) else {
+            panic_with_error!(&env, SASError::AttestationNotFound);
+        };
+
+        attestation.attester.require_auth();
+
+        if !attestation.revocable {
+            panic_with_error!(&env, SASError::NotRevocable);
+        }
+        if attestation.revocation_time != 0 {
+            panic_with_error!(&env, SASError::AlreadyRevoked);
+        }
+
+        // Validate that the new expiration time extends or maintains the current one.
+        // Perpetual (0) is always allowed. If current is perpetual, it stays perpetual.
+        // If current is non-zero, new must be 0 (perpetual) or >= current.
+        if attestation.expiration_time != 0 {
+            if new_expiration_time != 0 && new_expiration_time < attestation.expiration_time {
+                panic_with_error!(&env, SASError::InvalidTTL);
+            }
+        }
+        // If current expiration_time is 0 (perpetual), new_expiration_time must also be 0
+        // (we don't allow making a perpetual attestation expirable)
+        if attestation.expiration_time == 0 && new_expiration_time != 0 {
+            panic_with_error!(&env, SASError::InvalidTTL);
+        }
+
+        // Validate the new expiration time is not already in the past
+        if let Err(err) = validate_expiration(&env, new_expiration_time) {
+            panic_with_error!(&env, err);
+        }
+
+        // Update the expiration time
+        attestation.expiration_time = new_expiration_time;
+
+        // Update storage with new TTL
+        let ttl = Self::compute_storage_ttl(&env, attestation.expiration_time);
+        env.storage().persistent().set(&uid, &attestation);
+        env.storage().persistent().extend_ttl(&uid, ttl, ttl);
+
+        // Emit event
+        events::publish_attestation_renewed(&env, &uid, &attestation.attester, new_expiration_time);
+
+        // Notify indexer if bound
+        if let Some(indexer) = env.storage().instance().get::<_, Address>(&INDEXER) {
+            let _ = env.try_invoke_contract::<(), soroban_sdk::Error>(
+                &indexer,
+                &Symbol::new(&env, "handle_renew"),
+                soroban_sdk::vec![&env, uid.clone().into_val(&env), new_expiration_time.into_val(&env)],
+            );
+        }
+
+        extend_instance_ttl(&env);
+        uid
+    }
+
     pub fn multi_attest(
         env: Env,
         attestations: soroban_sdk::Vec<Attestation>,

@@ -49,6 +49,8 @@ pub const SCHEMA_DEPRECATED: Symbol = symbol_short!("SCHDEP");
 pub const CONTRACT_PAUSED: Symbol = symbol_short!("PAUSED");
 /// First topic of every `ContractUnpaused` event.
 pub const CONTRACT_UNPAUSED: Symbol = symbol_short!("UNPAUSED");
+/// First topic of every `AttestationRenewed` event.
+pub const ATTESTATION_RENEWED: Symbol = symbol_short!("ATSTRENEW");
 
 /// Payload of the `SchemaRegistered` event.
 ///
@@ -340,6 +342,19 @@ pub struct ContractPausedEvent {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ContractUnpausedEvent {
     pub authorizer: Address,
+}
+
+/// Payload of the `AttestationRenewed` event.
+///
+/// Published with topics `(ATTESTATION_RENEWED, uid, attester)` when
+/// `SAS::renew_attestation` extends an attestation's expiration time.
+/// `new_expiration_time` is the new expiration time (0 = perpetual).
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AttestationRenewedEvent {
+    pub uid: UID,
+    pub attester: Address,
+    pub new_expiration_time: u64,
 }
 
 /// First topic of a SAS `FeeConfigUpdated` event.

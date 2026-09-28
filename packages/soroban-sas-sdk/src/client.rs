@@ -1454,6 +1454,77 @@ impl SASClient {
             fee_policy,
         )
     }
+
+    /// Calls `SAS::renew_attestation(uid, new_expiration_time)`: extends the
+    /// expiration time of an existing attestation without revoking and re-issuing.
+    /// Requires `secret_seed`'s account to be the attestation's attester.
+    pub fn renew_attestation(
+        &self,
+        env: &Env,
+        rpc: &RpcClient,
+        network_passphrase: &str,
+        secret_seed: &[u8; 32],
+        uid: &[u8; 32],
+        new_expiration_time: u64,
+    ) -> Result<GetTransactionResult, SdkError> {
+        // Verify the secret seed matches the attester by fetching the attestation first
+        let attestation = self.get_attestation(env, rpc, uid)?;
+        if let Some(att) = attestation {
+            ensure_attester_matches_secret(env, secret_seed, &att)?;
+        } else {
+            return Err(SdkError::InvalidInput("attestation not found".to_string()));
+        }
+        let uid_val = UID(BytesN::from_array(env, uid));
+        let args = vec![
+            simulate::encode_arg(env, &uid_val)?,
+            simulate::encode_arg(env, &new_expiration_time)?,
+        ];
+        self.submit_write(
+            env,
+            rpc,
+            network_passphrase,
+            secret_seed,
+            &self.contract_id,
+            "renew_attestation",
+            args,
+        )
+    }
+
+    /// Like [`renew_attestation`](Self::renew_attestation) but allows a
+    /// [`FeePolicy`].
+    pub fn renew_attestation_with_fee_policy(
+        &self,
+        env: &Env,
+        rpc: &RpcClient,
+        network_passphrase: &str,
+        secret_seed: &[u8; 32],
+        uid: &[u8; 32],
+        new_expiration_time: u64,
+        fee_policy: &FeePolicy,
+    ) -> Result<GetTransactionResult, SdkError> {
+        let attestation = self.get_attestation(env, rpc, uid)?;
+        if let Some(att) = attestation {
+            ensure_attester_matches_secret(env, secret_seed, &att)?;
+        } else {
+            return Err(SdkError::InvalidInput("attestation not found".to_string()));
+        }
+        let uid_val = UID(BytesN::from_array(env, uid));
+        let args = vec![
+            simulate::encode_arg(env, &uid_val)?,
+            simulate::encode_arg(env, &new_expiration_time)?,
+        ];
+        invoke_write_with_fee_policy(
+            env,
+            rpc,
+            network_passphrase,
+            secret_seed,
+            &self.contract_id,
+            "renew_attestation",
+            args,
+            fee_policy,
+        )
+    }
+
 }
 
 fn encode_multi_attest_arg(env: &Env, attestations: &[Attestation]) -> Result<ScVal, SdkError> {

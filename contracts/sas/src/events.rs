@@ -1,11 +1,11 @@
 use soroban_sas_common::{
     events::{
-        ADMIN_TRANSFER_COMPLETED, ADMIN_TRANSFER_PROPOSED, ATTESTED, BATCH_ATTESTED, BATCH_REVOKED,
+        ADMIN_TRANSFER_COMPLETED, ADMIN_TRANSFER_PROPOSED, ATTESTATION_RENEWED, ATTESTED, BATCH_ATTESTED, BATCH_REVOKED,
         CONTRACT_PAUSED, CONTRACT_UNPAUSED, CONTRACT_UPGRADED, INDEXER_STRICT_UPDATED,
         INDEXER_UPDATED, REVOKED,
     },
     AdminTransferCompletedEvent, AdminTransferProposedEvent, Attestation, AttestationIssuedEvent,
-    AttestationRevokedEvent, BatchAttestedEvent, BatchRevokedEvent, ContractPausedEvent,
+    AttestationRenewedEvent, AttestationRevokedEvent, BatchAttestedEvent, BatchRevokedEvent, ContractPausedEvent,
     ContractUnpausedEvent, ContractUpgradedEvent, IndexerStrictUpdatedEvent, IndexerUpdatedEvent,
     UID,
 };
@@ -230,5 +230,30 @@ pub fn publish_contract_unpaused(env: &Env, authorizer: Address) {
     env.events().publish(
         (CONTRACT_UNPAUSED, authorizer.clone()),
         ContractUnpausedEvent { authorizer },
+    );
+}
+
+/// Publishes the `AttestationRenewed` event when an attestation's expiration
+/// time is extended via `SAS::renew_attestation`.
+///
+/// Topics: `(ATTESTATION_RENEWED, uid, attester)`.
+pub fn publish_attestation_renewed(
+    env: &Env,
+    uid: &UID,
+    attester: &Address,
+    new_expiration_time: u64,
+) {
+    let event = AttestationRenewedEvent {
+        uid: uid.clone(),
+        attester: attester.clone(),
+        new_expiration_time,
+    };
+    env.events().publish(
+        (
+            ATTESTATION_RENEWED,
+            uid.clone(),
+            attester.clone(),
+        ),
+        event,
     );
 }
