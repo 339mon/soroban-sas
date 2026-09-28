@@ -20,16 +20,17 @@
 //!   NETWORK_PASSPHRASE  Network passphrase (default: "Standalone Network ; February 2017",
 //!                       matching docker-compose.yml's `stellar/quickstart:testing --standalone`)
 
+use soroban_sas_sdk::attestation_builder::AttestationRequestBuilder;
 use soroban_sas_sdk::client::{IndexerClient, SASClient};
 use soroban_sas_sdk::rpc::RpcClient;
 use soroban_sas_sdk::signature::derive_public_key;
-use soroban_sas_sdk::attestation_builder::AttestationRequestBuilder;
 use soroban_sdk::{Bytes, Env};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 fn rpc_url() -> String {
-    std::env::var("SOROBAN_RPC_URL").unwrap_or_else(|_| "http://localhost:8000/soroban/rpc".to_string())
+    std::env::var("SOROBAN_RPC_URL")
+        .unwrap_or_else(|_| "http://localhost:8000/soroban/rpc".to_string())
 }
 
 fn network_passphrase() -> String {
@@ -38,8 +39,9 @@ fn network_passphrase() -> String {
 }
 
 fn secret_key() -> String {
-    std::env::var("STELLAR_SECRET_KEY")
-        .expect("STELLAR_SECRET_KEY must be set to run integration tests (see DEVELOPER_RUNBOOK.md)")
+    std::env::var("STELLAR_SECRET_KEY").expect(
+        "STELLAR_SECRET_KEY must be set to run integration tests (see DEVELOPER_RUNBOOK.md)",
+    )
 }
 
 fn parse_secret_seed(value: &str) -> [u8; 32] {
@@ -61,9 +63,7 @@ fn workspace_root() -> PathBuf {
 /// failure: an already-funded account (e.g. re-running against a node that
 /// kept its volume) is not an error.
 fn fund_account(address: &str) {
-    let base = rpc_url()
-        .trim_end_matches("/soroban/rpc")
-        .to_string();
+    let base = rpc_url().trim_end_matches("/soroban/rpc").to_string();
     let url = format!("{base}/friendbot?addr={address}");
     let _ = ureq::get(&url).call();
 }
@@ -145,7 +145,14 @@ fn deploy_contract(dir: &Path, wasm: &Path, identity: &str, rpc: &str, passphras
     id
 }
 
-fn invoke(dir: &Path, contract_id: &str, identity: &str, rpc: &str, passphrase: &str, call_args: &[&str]) -> String {
+fn invoke(
+    dir: &Path,
+    contract_id: &str,
+    identity: &str,
+    rpc: &str,
+    passphrase: &str,
+    call_args: &[&str],
+) -> String {
     let mut args = vec!["contract", "invoke", "--id", contract_id];
     args.extend(net_args(identity, rpc, passphrase));
     args.push("--");
@@ -197,7 +204,13 @@ fn deploy_stack(secret: &str) -> (String, String, String, String) {
         &rpc,
         &passphrase,
     );
-    let sas_id = deploy_contract(&root, &wasm_dir.join("sas.wasm"), &identity, &rpc, &passphrase);
+    let sas_id = deploy_contract(
+        &root,
+        &wasm_dir.join("sas.wasm"),
+        &identity,
+        &rpc,
+        &passphrase,
+    );
     let indexer_id = deploy_contract(
         &root,
         &wasm_dir.join("soroban_sas_indexer.wasm"),
@@ -213,7 +226,14 @@ fn deploy_stack(secret: &str) -> (String, String, String, String) {
         &passphrase,
     );
 
-    invoke(&root, &registry_id, &identity, &rpc, &passphrase, &["init", "--admin", &admin]);
+    invoke(
+        &root,
+        &registry_id,
+        &identity,
+        &rpc,
+        &passphrase,
+        &["init", "--admin", &admin],
+    );
     invoke(
         &root,
         &sas_id,
@@ -263,16 +283,20 @@ async fn schema_registration_attest_revoke_and_indexer_lookup() {
 
     // 1. Schema registration.
     sas_client
-        .register_schema(&env, &rpc, &passphrase, &secret, &registry_id, "bool verified", &resolver_id, true)
+        .register_schema(
+            &env,
+            &rpc,
+            &passphrase,
+            &secret,
+            &registry_id,
+            "bool verified",
+            &resolver_id,
+            true,
+        )
         .expect("register_schema failed");
     let resolver_address =
         soroban_sdk::Address::from_string(&soroban_sdk::String::from_str(&env, &resolver_id));
-    let schema_uid = SASClient::compute_schema_uid(
-        &env,
-        "bool verified",
-        &resolver_address,
-        true,
-    );
+    let schema_uid = SASClient::compute_schema_uid(&env, "bool verified", &resolver_address, true);
 
     // 2. Attestation issuance: self-attest (admin is both attester and recipient).
     let attestation = AttestationRequestBuilder::new()
@@ -293,7 +317,10 @@ async fn schema_registration_attest_revoke_and_indexer_lookup() {
         .expect("get_attestation failed")
         .expect("attestation was not found after a successful attest");
     assert_eq!(fetched.uid.0.to_array(), uid);
-    assert_eq!(fetched.revocation_time, 0, "freshly issued attestation must not be revoked");
+    assert_eq!(
+        fetched.revocation_time, 0,
+        "freshly issued attestation must not be revoked"
+    );
 
     // 3. Indexer reverse lookup: the admin's own attestation must be
     // discoverable by recipient without knowing its UID in advance.
@@ -314,7 +341,10 @@ async fn schema_registration_attest_revoke_and_indexer_lookup() {
         .get_attestation(&env, &rpc, &uid)
         .expect("get_attestation after revoke failed")
         .expect("revoked attestation must still be readable");
-    assert_ne!(revoked.revocation_time, 0, "revoke must set a nonzero revocation_time");
+    assert_ne!(
+        revoked.revocation_time, 0,
+        "revoke must set a nonzero revocation_time"
+    );
 }
 
 /// SAC fee deduction: configures a fee in the native XLM SAC, attests with
@@ -358,7 +388,10 @@ async fn sac_fee_deduction_on_attest_with_value() {
     .unwrap_or("")
     .trim()
     .to_string();
-    assert!(token_id.starts_with('C'), "expected a SAC contract id, got: {token_id}");
+    assert!(
+        token_id.starts_with('C'),
+        "expected a SAC contract id, got: {token_id}"
+    );
 
     const FEE_AMOUNT: i128 = 500;
 
@@ -369,7 +402,16 @@ async fn sac_fee_deduction_on_attest_with_value() {
     let sas_client = SASClient::new(sas_id.clone());
 
     sas_client
-        .register_schema(&env, &rpc, &passphrase, &secret, &registry_id, "bool paid", &resolver_id, true)
+        .register_schema(
+            &env,
+            &rpc,
+            &passphrase,
+            &secret,
+            &registry_id,
+            "bool paid",
+            &resolver_id,
+            true,
+        )
         .expect("register_schema failed");
     let resolver_address =
         soroban_sdk::Address::from_string(&soroban_sdk::String::from_str(&env, &resolver_id));
@@ -401,7 +443,15 @@ async fn sac_fee_deduction_on_attest_with_value() {
         .expect("failed to build attestation");
 
     sas_client
-        .attest_with_value(&env, &rpc, &passphrase, &secret, attestation, &token_id, FEE_AMOUNT)
+        .attest_with_value(
+            &env,
+            &rpc,
+            &passphrase,
+            &secret,
+            attestation,
+            &token_id,
+            FEE_AMOUNT,
+        )
         .expect("attest_with_value failed");
 
     let balance_after: i128 = invoke(

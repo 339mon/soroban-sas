@@ -30,8 +30,8 @@ fn main() {
     let attester_key = flag_value(&args, "--secret-key");
     let relayer_key = flag_value(&args, "--relayer-key");
     let dry_run = args.iter().any(|a| a == "--dry-run") || attester_key.is_none();
-    let rpc_url =
-        flag_value(&args, "--rpc-url").unwrap_or_else(|| "https://soroban-testnet.stellar.org".to_string());
+    let rpc_url = flag_value(&args, "--rpc-url")
+        .unwrap_or_else(|| "https://soroban-testnet.stellar.org".to_string());
     let env = Env::default();
 
     // Step 1: derive the attester's signing key, or a fixed demo seed.
@@ -97,8 +97,11 @@ fn main() {
     }
 
     // Step 5: a funded relayer submits the signed payload and pays the fee.
-    let relayer_seed =
-        parse_secret_seed(relayer_key.as_deref().expect("--relayer-key is required to submit"));
+    let relayer_seed = parse_secret_seed(
+        relayer_key
+            .as_deref()
+            .expect("--relayer-key is required to submit"),
+    );
     let rpc = RpcClient::new(rpc_url);
     let client = SASClient::new(contract_id);
 
@@ -140,13 +143,17 @@ fn env_or(key: &str, default: &str) -> String {
 fn hex_decode_32(hex_str: &str, field: &str) -> [u8; 32] {
     let cleaned = hex_str.trim_start_matches("0x");
     let bytes = hex::decode(cleaned).unwrap_or_else(|e| panic!("invalid hex in {field}: {e}"));
-    bytes.try_into().unwrap_or_else(|_| panic!("{field} must be exactly 32 bytes"))
+    bytes
+        .try_into()
+        .unwrap_or_else(|_| panic!("{field} must be exactly 32 bytes"))
 }
 
 fn parse_secret_seed(value: &str) -> [u8; 32] {
     let trimmed = value.trim();
     if trimmed.starts_with('S') {
-        stellar_strkey::ed25519::PrivateKey::from_string(trimmed).expect("invalid secret seed strkey").0
+        stellar_strkey::ed25519::PrivateKey::from_string(trimmed)
+            .expect("invalid secret seed strkey")
+            .0
     } else {
         hex_decode_32(trimmed, "secret seed")
     }

@@ -1085,6 +1085,7 @@ impl SASClient {
     /// part of the same invocation. `token` is a strkey contract address
     /// (`C...`); the contract itself validates that `token`/`value` match
     /// its configured fee policy (`SASError::FeeMismatch` otherwise).
+    #[allow(clippy::too_many_arguments)]
     pub fn attest_with_value(
         &self,
         env: &Env,

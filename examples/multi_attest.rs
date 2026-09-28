@@ -29,7 +29,8 @@ fn main() {
     }
 
     // No key means dry-run: never block on a live network or funded account.
-    let dry_run = args.iter().any(|a| a == "--dry-run") || !args.iter().any(|a| a == "--secret-key");
+    let dry_run =
+        args.iter().any(|a| a == "--dry-run") || !args.iter().any(|a| a == "--secret-key");
     let rpc_url = flag_value(&args, "--rpc-url")
         .unwrap_or_else(|| "https://soroban-testnet.stellar.org".to_string());
     let secret_key = flag_value(&args, "--secret-key");
@@ -91,8 +92,7 @@ fn main() {
     // Step 4: submit the whole batch as one `multi_attest` call (atomic).
     let contract_id = std::env::var("SAS_CONTRACT_ID")
         .expect("SAS_CONTRACT_ID is required to submit (or pass --dry-run)");
-    let network_passphrase =
-        env_or("NETWORK_PASSPHRASE", "Test SDF Network ; September 2015");
+    let network_passphrase = env_or("NETWORK_PASSPHRASE", "Test SDF Network ; September 2015");
     let seed = parse_secret_seed(secret_key.as_deref().unwrap());
 
     let rpc = RpcClient::new(rpc_url);
